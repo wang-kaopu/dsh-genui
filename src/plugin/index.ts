@@ -14,7 +14,7 @@ import { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRenderUiTool, createValidateDshUiTool } from './tool.ts'
@@ -71,7 +71,18 @@ async function serveGenuiAsset(req: IncomingMessage, res: ServerResponse): Promi
   try {
     // lib/index.js → ./assets/ = <pkg>/lib/assets/ (the tsdown asset outDir).
     const dir = fileURLToPath(new URL('./assets/', import.meta.url))
-    const body = await readFile(join(dir, file))
+    const path = join(dir, file)
+    if (req.method === 'HEAD') {
+      const info = await stat(path)
+      if (!info.isFile()) throw new Error('asset is not a file')
+      res.writeHead(200, {
+        'content-type': 'text/javascript; charset=utf-8',
+        'cache-control': 'no-cache',
+      })
+      res.end()
+      return
+    }
+    const body = await readFile(path)
     res.writeHead(200, {
       'content-type': 'text/javascript; charset=utf-8',
       'cache-control': 'no-cache',
