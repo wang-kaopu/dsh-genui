@@ -291,20 +291,26 @@ export const Scene3DNode = memo(function Scene3DNode({ node }: { node: GenuiScen
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const ref = useRef<HTMLDivElement | null>(null)
   // Mesh cap mirrored from the guard: a pathological scene never reaches
-  // three.js (per-frame cost scales with mesh count).
-  const scene = node.meshes.length > GENUI_LIMITS.maxMeshes ? { ...node, meshes: node.meshes.slice(0, GENUI_LIMITS.maxMeshes) } : node
+  // three.js (per-frame cost scales with mesh count). Memoizing the capped
+  // copy keeps the effect stable across status-only re-renders.
+  const scene = useMemo(
+    () => node.meshes.length > GENUI_LIMITS.maxMeshes ? { ...node, meshes: node.meshes.slice(0, GENUI_LIMITS.maxMeshes) } : node,
+    [node],
+  )
   useEffect(() => {
     let alive = true
     let dispose: (() => void) | undefined
-    void import('../scene3d-lazy.ts').then(async m => {
-      if (!alive || ref.current === null) return
+    setStatus('loading')
+    void (async () => {
       try {
+        const m = await import('../scene3d-lazy.ts')
+        if (!alive || ref.current === null) return
         dispose = await m.mountScene(ref.current, scene)
         if (alive) setStatus('ready')
       } catch {
         if (alive) setStatus('error')
       }
-    })
+    })()
     return () => { alive = false; dispose?.() }
   }, [scene])
   return (
