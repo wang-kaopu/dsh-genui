@@ -65,7 +65,7 @@ describe('GenUI asset HEAD route', () => {
     const request = {
       method: 'HEAD',
       url: '/plugins/@changfenhuang/dsh-genui/assets/mermaid.js',
-    } as IncomingMessage
+    } as unknown as IncomingMessage
 
     await route.handler(request, response)
 
@@ -86,7 +86,7 @@ describe('GenUI asset HEAD route', () => {
     const request = {
       method: 'HEAD',
       url: '/plugins/@changfenhuang/dsh-genui/assets/mermaid.js',
-    } as IncomingMessage
+    } as unknown as IncomingMessage
 
     await route.handler(request, response)
 
