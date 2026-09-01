@@ -19,6 +19,18 @@ fs.writeFileSync(
   `${JSON.stringify({ private: true }, null, 2)}\n`,
 )
 
+const versionResult = spawnSync(process.execPath, [pnpmCli, '--version'], {
+  cwd: workDir,
+  encoding: 'utf8',
+  stdio: 'pipe',
+})
+const pnpmVersion = (versionResult.stdout || '').trim()
+if (versionResult.error || versionResult.status !== 0 || !pnpmVersion) {
+  throw new Error(
+    `failed to resolve historical pnpm version: ${versionResult.error?.message || versionResult.stderr || versionResult.status}`,
+  )
+}
+
 const spec = 'github:omdsh-dev/dsh-genui#6298f8ca'
 const result = spawnSync(process.execPath, [pnpmCli, 'add', spec], {
   cwd: workDir,
@@ -35,6 +47,7 @@ const errorText = result.error
   : ''
 const combined = [
   '=== spawn metadata ===',
+  `pnpmVersion=${pnpmVersion}`,
   `command=${process.execPath} ${pnpmCli} add ${spec}`,
   `status=${status}`,
   `signal=${result.signal || ''}`,
@@ -54,7 +67,8 @@ const esbuildEmpty = /Expected ".*" but got ""/.test(combined)
 const prepackEinval = /prepack/i.test(combined) && /EINVAL/.test(combined)
 const gitPrepareNotAllowed = /ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED/.test(combined)
 
-console.log(`\npnpm exit=${status}`)
+console.log(`\npnpm version=${pnpmVersion}`)
+console.log(`pnpm exit=${status}`)
 console.log(`esbuild empty stdout=${esbuildEmpty}`)
 console.log(`prepack EINVAL=${prepackEinval}`)
 console.log(`git prepare not allowed=${gitPrepareNotAllowed}`)
@@ -63,6 +77,7 @@ if (process.env.GITHUB_OUTPUT) {
   fs.appendFileSync(
     process.env.GITHUB_OUTPUT,
     [
+      `pnpm_version=${pnpmVersion}`,
       `pnpm_exit=${status}`,
       `esbuild_empty=${esbuildEmpty}`,
       `prepack_einval=${prepackEinval}`,
@@ -87,6 +102,7 @@ if (process.env.GITHUB_STEP_SUMMARY) {
       '## Historical git prepare',
       '',
       `- Node: \`${process.version}\``,
+      `- pnpm: \`${pnpmVersion}\``,
       `- source: \`${spec}\``,
       `- pnpm exit: \`${status}\``,
       `- esbuild empty stdout: \`${esbuildEmpty}\``,
