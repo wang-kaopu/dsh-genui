@@ -149,6 +149,105 @@ jobs:
 
           node diagnose-esbuild.cjs $exe
 
+      # Turn the interesting observations into the job conclusion so the result
+      # can be read from the Actions API without manually opening Windows logs.
+      - name: Assert native exe, child_process, shim and postinstall
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "esbuild-isolated"
+          Set-Location $dir
+          $exe = node -e "console.log(require.resolve('@esbuild/win32-x64/esbuild.exe'))"
+
+          @'
+          const { execFileSync, spawnSync } = require('node:child_process')
+
+          const exe = process.argv[2]
+          const expected = process.argv[3]
+          const failures = []
+
+          function checkSpawn(label, command, args) {
+            const result = spawnSync(command, args, {
+              encoding: 'utf8',
+              stdio: 'pipe',
+            })
+            const stdout = (result.stdout || '').trim()
+            if (result.error || result.status !== 0 || stdout !== expected) {
+              failures.push({
+                label,
+                error: result.error && {
+                  message: result.error.message,
+                  code: result.error.code,
+                  errno: result.error.errno,
+                },
+                status: result.status,
+                signal: result.signal,
+                stdout: result.stdout,
+                stderr: result.stderr,
+              })
+            }
+          }
+
+          checkSpawn('spawnSync native exe', exe, ['--version'])
+
+          try {
+            const stdout = execFileSync(exe, ['--version'], {
+              encoding: 'utf8',
+              stdio: 'pipe',
+            }).trim()
+            if (stdout !== expected) {
+              failures.push({ label: 'execFileSync native exe', stdout })
+            }
+          } catch (error) {
+            failures.push({
+              label: 'execFileSync native exe',
+              error: {
+                message: error.message,
+                code: error.code,
+                errno: error.errno,
+                status: error.status,
+              },
+              stdout: error.stdout && error.stdout.toString(),
+              stderr: error.stderr && error.stderr.toString(),
+            })
+          }
+
+          checkSpawn(
+            'node bin/esbuild',
+            process.execPath,
+            ['node_modules/esbuild/bin/esbuild', '--version'],
+          )
+
+          const install = spawnSync(
+            process.execPath,
+            ['node_modules/esbuild/install.js'],
+            { encoding: 'utf8', stdio: 'pipe' },
+          )
+          if (install.error || install.status !== 0) {
+            failures.push({
+              label: 'esbuild install.js',
+              error: install.error && {
+                message: install.error.message,
+                code: install.error.code,
+                errno: install.error.errno,
+              },
+              status: install.status,
+              signal: install.signal,
+              stdout: install.stdout,
+              stderr: install.stderr,
+            })
+          }
+
+          if (failures.length) {
+            console.error('esbuild path assertion failed:')
+            console.error(JSON.stringify(failures, null, 2))
+            process.exit(1)
+          }
+
+          console.log(`all esbuild paths returned ${expected}`)
+          '@ | Set-Content -Encoding utf8 assert-esbuild.cjs
+
+          node assert-esbuild.cjs $exe "${{ matrix.esbuild }}"
+
   historical-git-prepare:
     name: historical git prepare / Node 24.18.0 / pnpm 11.21.0
     runs-on: windows-latest
@@ -175,7 +274,7 @@ jobs:
 
       # Replays the exact historical source path from #90. The step deliberately
       # exits 0 after recording pnpm's real exit code so a reproduced failure
-      # remains inspectable instead of cancelling later diagnostics/artifacts.
+      # remains inspectable instead of cancelling later classification/artifacts.
       - name: Replay issue 90 git-hosted prepare
         id: prepare
         shell: pwsh
@@ -189,8 +288,21 @@ jobs:
           pnpm add "github:omdsh-dev/dsh-genui#6298f8ca" 2>&1 | Tee-Object -FilePath $log
           $code = $LASTEXITCODE
 
+          $esbuildEmpty = [bool](Select-String -Path $log -Pattern 'Expected ".*" but got ""' -Quiet)
+          $hasPrepack = [bool](Select-String -Path $log -Pattern 'prepack' -Quiet)
+          $hasEinval = [bool](Select-String -Path $log -Pattern 'EINVAL' -Quiet)
+          $prepackEinval = $hasPrepack -and $hasEinval
+          $gitPrepareNotAllowed = [bool](Select-String -Path $log -Pattern 'ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED' -Quiet)
+
           Write-Host "pnpm exit=$code"
+          Write-Host "esbuild empty stdout=$esbuildEmpty"
+          Write-Host "prepack EINVAL=$prepackEinval"
+          Write-Host "git prepare not allowed=$gitPrepareNotAllowed"
+
           "pnpm_exit=$code" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "esbuild_empty=$($esbuildEmpty.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "prepack_einval=$($prepackEinval.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "git_prepare_not_allowed=$($gitPrepareNotAllowed.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
           Add-Content $env:GITHUB_STEP_SUMMARY "## Historical git prepare"
           Add-Content $env:GITHUB_STEP_SUMMARY ""
@@ -198,6 +310,9 @@ jobs:
           Add-Content $env:GITHUB_STEP_SUMMARY "- pnpm: `$(pnpm -v)`"
           Add-Content $env:GITHUB_STEP_SUMMARY "- source: `github:omdsh-dev/dsh-genui#6298f8ca`"
           Add-Content $env:GITHUB_STEP_SUMMARY "- pnpm exit: `$code`"
+          Add-Content $env:GITHUB_STEP_SUMMARY "- esbuild empty stdout: `$esbuildEmpty`"
+          Add-Content $env:GITHUB_STEP_SUMMARY "- prepack EINVAL: `$prepackEinval`"
+          Add-Content $env:GITHUB_STEP_SUMMARY "- git prepare not allowed: `$gitPrepareNotAllowed`"
           Add-Content $env:GITHUB_STEP_SUMMARY ""
           Add-Content $env:GITHUB_STEP_SUMMARY "Key signatures:"
           Add-Content $env:GITHUB_STEP_SUMMARY '```text'
@@ -207,6 +322,35 @@ jobs:
 
           # This is an investigation workflow: a reproduced failure is data.
           exit 0
+
+      - name: CLASSIFICATION - esbuild empty stdout reproduced
+        if: steps.prepare.outputs.esbuild_empty == 'true'
+        shell: pwsh
+        run: Write-Host 'The Expected <version> but got empty stdout signature was reproduced.'
+
+      - name: CLASSIFICATION - prepack EINVAL reproduced
+        if: steps.prepare.outputs.prepack_einval == 'true'
+        shell: pwsh
+        run: Write-Host 'The independent Windows prepack EINVAL signature was reproduced.'
+
+      - name: CLASSIFICATION - pnpm git prepare restriction reproduced
+        if: steps.prepare.outputs.git_prepare_not_allowed == 'true'
+        shell: pwsh
+        run: Write-Host 'ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED was reproduced.'
+
+      - name: CLASSIFICATION - historical git install succeeded
+        if: steps.prepare.outputs.pnpm_exit == '0'
+        shell: pwsh
+        run: Write-Host 'The historical Git dependency completed successfully on this clean Windows runner.'
+
+      - name: CLASSIFICATION - other git prepare failure
+        if: >-
+          steps.prepare.outputs.pnpm_exit != '0' &&
+          steps.prepare.outputs.esbuild_empty != 'true' &&
+          steps.prepare.outputs.prepack_einval != 'true' &&
+          steps.prepare.outputs.git_prepare_not_allowed != 'true'
+        shell: pwsh
+        run: Write-Host 'The historical Git dependency failed with a different signature.'
 
       - name: Upload prepare log
         if: always()
