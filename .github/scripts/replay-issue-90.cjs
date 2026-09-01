@@ -5,6 +5,9 @@ const { spawnSync } = require('node:child_process')
 const tempDir = process.argv[2]
 if (!tempDir) throw new Error('runner temp directory is required')
 
+const pnpmCli = process.env.HISTORICAL_PNPM_CLI
+if (!pnpmCli) throw new Error('HISTORICAL_PNPM_CLI is required')
+
 const workDir = path.join(tempDir, 'git-prepare')
 const stdoutPath = path.join(tempDir, 'issue-90-git-prepare.stdout.log')
 const stderrPath = path.join(tempDir, 'issue-90-git-prepare.stderr.log')
@@ -16,9 +19,8 @@ fs.writeFileSync(
   `${JSON.stringify({ private: true }, null, 2)}\n`,
 )
 
-const comspec = process.env.ComSpec || process.env.COMSPEC || 'cmd.exe'
-const command = 'pnpm add "github:omdsh-dev/dsh-genui#6298f8ca"'
-const result = spawnSync(comspec, ['/d', '/s', '/c', command], {
+const spec = 'github:omdsh-dev/dsh-genui#6298f8ca'
+const result = spawnSync(process.execPath, [pnpmCli, 'add', spec], {
   cwd: workDir,
   encoding: 'utf8',
   stdio: 'pipe',
@@ -33,7 +35,7 @@ const errorText = result.error
   : ''
 const combined = [
   '=== spawn metadata ===',
-  `command=${comspec} /d /s /c ${command}`,
+  `command=${process.execPath} ${pnpmCli} add ${spec}`,
   `status=${status}`,
   `signal=${result.signal || ''}`,
   `error=${errorText.trim()}`,
@@ -85,7 +87,7 @@ if (process.env.GITHUB_STEP_SUMMARY) {
       '## Historical git prepare',
       '',
       `- Node: \`${process.version}\``,
-      `- source: \`github:omdsh-dev/dsh-genui#6298f8ca\``,
+      `- source: \`${spec}\``,
       `- pnpm exit: \`${status}\``,
       `- esbuild empty stdout: \`${esbuildEmpty}\``,
       `- prepack EINVAL: \`${prepackEinval}\``,
