@@ -260,17 +260,26 @@ jobs:
         with:
           node-version: "24.18.0"
 
-      # Avoid pnpm/action-setup reading this checkout's packageManager field.
-      # The historical reproduction intentionally needs the reporter's pnpm.
+      # Avoid pnpm/action-setup and Corepack selecting the repository's pnpm.
+      # Invoke the globally installed historical package through node directly.
       - name: Install historical pnpm
         shell: pwsh
-        run: npm install --global pnpm@11.21.0
+        run: |
+          npm install --global pnpm@11.21.0
+          $globalRoot = npm root --global
+          $pnpmCli = Join-Path $globalRoot "pnpm\bin\pnpm.cjs"
+          if (-not (Test-Path $pnpmCli)) {
+            throw "pnpm CLI not found at $pnpmCli"
+          }
+          node $pnpmCli --version
+          "HISTORICAL_PNPM_CLI=$pnpmCli" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Show environment
         shell: pwsh
         run: |
           node -v
-          pnpm -v
+          node "$env:HISTORICAL_PNPM_CLI" --version
+          Write-Host "HISTORICAL_PNPM_CLI=$env:HISTORICAL_PNPM_CLI"
           Write-Host "OS=$([System.Environment]::OSVersion.VersionString)"
           Write-Host "ComSpec=$env:ComSpec"
           Write-Host "NODE_OPTIONS=$env:NODE_OPTIONS"
