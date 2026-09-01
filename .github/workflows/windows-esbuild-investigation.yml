@@ -254,6 +254,8 @@ jobs:
     timeout-minutes: 20
 
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "24.18.0"
@@ -272,73 +274,12 @@ jobs:
           Write-Host "NODE_OPTIONS=$env:NODE_OPTIONS"
           Write-Host "ESBUILD_BINARY_PATH=$env:ESBUILD_BINARY_PATH"
 
-      # Replay through cmd.exe but collect the child exit code with Start-Process.
-      # A failed historical install is evidence, not a PowerShell step failure.
+      # The harness itself always exits 0 after recording the child process
+      # result. A failed historical install is evidence, not a workflow error.
       - name: Replay issue 90 git-hosted prepare
         id: prepare
         shell: pwsh
-        run: |
-          $dir = Join-Path $env:RUNNER_TEMP "git-prepare"
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          Set-Location $dir
-          '{"private":true}' | Set-Content -Encoding utf8 package.json
-
-          $stdoutLog = Join-Path $env:RUNNER_TEMP "issue-90-git-prepare.stdout.log"
-          $stderrLog = Join-Path $env:RUNNER_TEMP "issue-90-git-prepare.stderr.log"
-          $log = Join-Path $env:RUNNER_TEMP "issue-90-git-prepare.log"
-          $command = 'pnpm add "github:omdsh-dev/dsh-genui#6298f8ca"'
-
-          $process = Start-Process `
-            -FilePath $env:ComSpec `
-            -ArgumentList @('/d', '/s', '/c', $command) `
-            -WorkingDirectory $dir `
-            -RedirectStandardOutput $stdoutLog `
-            -RedirectStandardError $stderrLog `
-            -Wait `
-            -PassThru `
-            -NoNewWindow
-
-          $code = $process.ExitCode
-          @(
-            '=== stdout ==='
-            Get-Content $stdoutLog -ErrorAction SilentlyContinue
-            '=== stderr ==='
-            Get-Content $stderrLog -ErrorAction SilentlyContinue
-          ) | Set-Content -Encoding utf8 $log
-
-          Get-Content $log | ForEach-Object { Write-Host $_ }
-
-          $esbuildEmpty = [bool](Select-String -Path $log -Pattern 'Expected ".*" but got ""' -Quiet)
-          $hasPrepack = [bool](Select-String -Path $log -Pattern 'prepack' -Quiet)
-          $hasEinval = [bool](Select-String -Path $log -Pattern 'EINVAL' -Quiet)
-          $prepackEinval = $hasPrepack -and $hasEinval
-          $gitPrepareNotAllowed = [bool](Select-String -Path $log -Pattern 'ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED' -Quiet)
-
-          Write-Host "pnpm exit=$code"
-          Write-Host "esbuild empty stdout=$esbuildEmpty"
-          Write-Host "prepack EINVAL=$prepackEinval"
-          Write-Host "git prepare not allowed=$gitPrepareNotAllowed"
-
-          "pnpm_exit=$code" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "esbuild_empty=$($esbuildEmpty.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "prepack_einval=$($prepackEinval.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "git_prepare_not_allowed=$($gitPrepareNotAllowed.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
-          Add-Content $env:GITHUB_STEP_SUMMARY "## Historical git prepare"
-          Add-Content $env:GITHUB_STEP_SUMMARY ""
-          Add-Content $env:GITHUB_STEP_SUMMARY "- Node: `$(node -v)`"
-          Add-Content $env:GITHUB_STEP_SUMMARY "- pnpm: `$(pnpm -v)`"
-          Add-Content $env:GITHUB_STEP_SUMMARY "- source: `github:omdsh-dev/dsh-genui#6298f8ca`"
-          Add-Content $env:GITHUB_STEP_SUMMARY "- pnpm exit: `$code`"
-          Add-Content $env:GITHUB_STEP_SUMMARY "- esbuild empty stdout: `$esbuildEmpty`"
-          Add-Content $env:GITHUB_STEP_SUMMARY "- prepack EINVAL: `$prepackEinval`"
-          Add-Content $env:GITHUB_STEP_SUMMARY "- git prepare not allowed: `$gitPrepareNotAllowed`"
-          Add-Content $env:GITHUB_STEP_SUMMARY ""
-          Add-Content $env:GITHUB_STEP_SUMMARY "Key signatures:"
-          Add-Content $env:GITHUB_STEP_SUMMARY '```text'
-          Select-String -Path $log -Pattern 'Expected .* but got','esbuild','EINVAL','ERR_PNPM_PREPARE_PACKAGE','ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED','prepack' |
-            ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_.Line }
-          Add-Content $env:GITHUB_STEP_SUMMARY '```'
+        run: node .github/scripts/replay-issue-90.cjs "$env:RUNNER_TEMP"
 
       - name: CLASSIFICATION - esbuild empty stdout reproduced
         if: steps.prepare.outputs.esbuild_empty == 'true'
