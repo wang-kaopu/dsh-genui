@@ -1,0 +1,217 @@
+name: Windows esbuild investigation
+
+on:
+  push:
+    branches:
+      - chore/windows-esbuild-investigation
+  workflow_dispatch:
+
+jobs:
+  isolated-esbuild:
+    name: isolated / Node ${{ matrix.node }} / esbuild ${{ matrix.esbuild }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - "22"
+          - "24.18.0"
+        esbuild:
+          - "0.25.12"
+          - "0.28.2"
+
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Show environment
+        shell: pwsh
+        run: |
+          node -v
+          npm -v
+          Write-Host "OS=$([System.Environment]::OSVersion.VersionString)"
+          Write-Host "PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE"
+          Write-Host "ComSpec=$env:ComSpec"
+          Write-Host "NODE_OPTIONS=$env:NODE_OPTIONS"
+          Write-Host "ESBUILD_BINARY_PATH=$env:ESBUILD_BINARY_PATH"
+
+      # Ignore lifecycle scripts first so postinstall cannot hide the lower-level
+      # direct-exe / child_process / JS-shim comparison we actually want.
+      - name: Install esbuild without lifecycle scripts
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "esbuild-isolated"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Set-Location $dir
+          npm init -y
+          npm install "esbuild@${{ matrix.esbuild }}" --ignore-scripts
+          node -e "console.log('installed esbuild=', require('esbuild/package.json').version)"
+
+      - name: Compare native exe, Node child_process and JS shim
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "esbuild-isolated"
+          Set-Location $dir
+
+          $exe = node -e "console.log(require.resolve('@esbuild/win32-x64/esbuild.exe'))"
+          Write-Host "native exe=$exe"
+
+          Write-Host "=== PowerShell -> native exe ==="
+          & $exe --version
+          Write-Host "exit=$LASTEXITCODE"
+
+          @'
+          const { execFileSync, spawnSync } = require('node:child_process')
+
+          const exe = process.argv[2]
+
+          function printable(value) {
+            if (Buffer.isBuffer(value)) return value.toString('utf8')
+            return value
+          }
+
+          function dump(label, result) {
+            console.log(`=== ${label} ===`)
+            console.log({
+              error: result.error && {
+                name: result.error.name,
+                message: result.error.message,
+                code: result.error.code,
+                errno: result.error.errno,
+                syscall: result.error.syscall,
+                path: result.error.path,
+              },
+              status: result.status,
+              signal: result.signal,
+              stdout: printable(result.stdout),
+              stderr: printable(result.stderr),
+            })
+          }
+
+          dump(
+            'spawnSync native exe / pipe',
+            spawnSync(exe, ['--version'], { encoding: 'utf8', stdio: 'pipe' }),
+          )
+
+          console.log('=== spawnSync native exe / inherit ===')
+          const inherited = spawnSync(exe, ['--version'], { stdio: 'inherit' })
+          console.log({
+            error: inherited.error && {
+              name: inherited.error.name,
+              message: inherited.error.message,
+              code: inherited.error.code,
+              errno: inherited.error.errno,
+            },
+            status: inherited.status,
+            signal: inherited.signal,
+          })
+
+          console.log('=== execFileSync native exe / pipe ===')
+          try {
+            const stdout = execFileSync(exe, ['--version'], {
+              encoding: 'utf8',
+              stdio: 'pipe',
+            })
+            console.log({ stdout: JSON.stringify(stdout) })
+          } catch (error) {
+            console.log({
+              name: error.name,
+              message: error.message,
+              code: error.code,
+              errno: error.errno,
+              status: error.status,
+              signal: error.signal,
+              stdout: printable(error.stdout),
+              stderr: printable(error.stderr),
+            })
+          }
+
+          dump(
+            'node bin/esbuild --version',
+            spawnSync(
+              process.execPath,
+              ['node_modules/esbuild/bin/esbuild', '--version'],
+              { encoding: 'utf8', stdio: 'pipe' },
+            ),
+          )
+
+          dump(
+            'esbuild install.js (postinstall)',
+            spawnSync(
+              process.execPath,
+              ['node_modules/esbuild/install.js'],
+              { encoding: 'utf8', stdio: 'pipe' },
+            ),
+          )
+          '@ | Set-Content -Encoding utf8 diagnose-esbuild.cjs
+
+          node diagnose-esbuild.cjs $exe
+
+  historical-git-prepare:
+    name: historical git prepare / Node 24.18.0 / pnpm 11.21.0
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+
+      - name: Show environment
+        shell: pwsh
+        run: |
+          node -v
+          pnpm -v
+          Write-Host "OS=$([System.Environment]::OSVersion.VersionString)"
+          Write-Host "ComSpec=$env:ComSpec"
+          Write-Host "NODE_OPTIONS=$env:NODE_OPTIONS"
+          Write-Host "ESBUILD_BINARY_PATH=$env:ESBUILD_BINARY_PATH"
+
+      # Replays the exact historical source path from #90. The step deliberately
+      # exits 0 after recording pnpm's real exit code so a reproduced failure
+      # remains inspectable instead of cancelling later diagnostics/artifacts.
+      - name: Replay issue 90 git-hosted prepare
+        id: prepare
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "git-prepare"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Set-Location $dir
+          '{"private":true}' | Set-Content -Encoding utf8 package.json
+
+          $log = Join-Path $env:RUNNER_TEMP "issue-90-git-prepare.log"
+          pnpm add "github:omdsh-dev/dsh-genui#6298f8ca" 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+
+          Write-Host "pnpm exit=$code"
+          "pnpm_exit=$code" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          Add-Content $env:GITHUB_STEP_SUMMARY "## Historical git prepare"
+          Add-Content $env:GITHUB_STEP_SUMMARY ""
+          Add-Content $env:GITHUB_STEP_SUMMARY "- Node: `$(node -v)`"
+          Add-Content $env:GITHUB_STEP_SUMMARY "- pnpm: `$(pnpm -v)`"
+          Add-Content $env:GITHUB_STEP_SUMMARY "- source: `github:omdsh-dev/dsh-genui#6298f8ca`"
+          Add-Content $env:GITHUB_STEP_SUMMARY "- pnpm exit: `$code`"
+          Add-Content $env:GITHUB_STEP_SUMMARY ""
+          Add-Content $env:GITHUB_STEP_SUMMARY "Key signatures:"
+          Add-Content $env:GITHUB_STEP_SUMMARY '```text'
+          Select-String -Path $log -Pattern 'Expected .* but got','esbuild','EINVAL','ERR_PNPM_PREPARE_PACKAGE','ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED','prepack' |
+            ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_.Line }
+          Add-Content $env:GITHUB_STEP_SUMMARY '```'
+
+          # This is an investigation workflow: a reproduced failure is data.
+          exit 0
+
+      - name: Upload prepare log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-90-git-prepare-node-24
+          path: ${{ runner.temp }}/issue-90-git-prepare.log
+          if-no-files-found: warn
