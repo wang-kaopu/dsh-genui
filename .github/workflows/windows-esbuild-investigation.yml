@@ -272,9 +272,8 @@ jobs:
           Write-Host "NODE_OPTIONS=$env:NODE_OPTIONS"
           Write-Host "ESBUILD_BINARY_PATH=$env:ESBUILD_BINARY_PATH"
 
-      # Replays the exact historical source path from #90. The step deliberately
-      # exits 0 after recording pnpm's real exit code so a reproduced failure
-      # remains inspectable instead of cancelling later classification/artifacts.
+      # Replay through cmd.exe but collect the child exit code with Start-Process.
+      # A failed historical install is evidence, not a PowerShell step failure.
       - name: Replay issue 90 git-hosted prepare
         id: prepare
         shell: pwsh
@@ -284,9 +283,30 @@ jobs:
           Set-Location $dir
           '{"private":true}' | Set-Content -Encoding utf8 package.json
 
+          $stdoutLog = Join-Path $env:RUNNER_TEMP "issue-90-git-prepare.stdout.log"
+          $stderrLog = Join-Path $env:RUNNER_TEMP "issue-90-git-prepare.stderr.log"
           $log = Join-Path $env:RUNNER_TEMP "issue-90-git-prepare.log"
-          pnpm add "github:omdsh-dev/dsh-genui#6298f8ca" 2>&1 | Tee-Object -FilePath $log
-          $code = $LASTEXITCODE
+          $command = 'pnpm add "github:omdsh-dev/dsh-genui#6298f8ca"'
+
+          $process = Start-Process `
+            -FilePath $env:ComSpec `
+            -ArgumentList @('/d', '/s', '/c', $command) `
+            -WorkingDirectory $dir `
+            -RedirectStandardOutput $stdoutLog `
+            -RedirectStandardError $stderrLog `
+            -Wait `
+            -PassThru `
+            -NoNewWindow
+
+          $code = $process.ExitCode
+          @(
+            '=== stdout ==='
+            Get-Content $stdoutLog -ErrorAction SilentlyContinue
+            '=== stderr ==='
+            Get-Content $stderrLog -ErrorAction SilentlyContinue
+          ) | Set-Content -Encoding utf8 $log
+
+          Get-Content $log | ForEach-Object { Write-Host $_ }
 
           $esbuildEmpty = [bool](Select-String -Path $log -Pattern 'Expected ".*" but got ""' -Quiet)
           $hasPrepack = [bool](Select-String -Path $log -Pattern 'prepack' -Quiet)
@@ -319,9 +339,6 @@ jobs:
           Select-String -Path $log -Pattern 'Expected .* but got','esbuild','EINVAL','ERR_PNPM_PREPARE_PACKAGE','ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED','prepack' |
             ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_.Line }
           Add-Content $env:GITHUB_STEP_SUMMARY '```'
-
-          # This is an investigation workflow: a reproduced failure is data.
-          exit 0
 
       - name: CLASSIFICATION - esbuild empty stdout reproduced
         if: steps.prepare.outputs.esbuild_empty == 'true'
@@ -357,5 +374,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: issue-90-git-prepare-node-24
-          path: ${{ runner.temp }}/issue-90-git-prepare.log
+          path: |
+            ${{ runner.temp }}/issue-90-git-prepare.log
+            ${{ runner.temp }}/issue-90-git-prepare.stdout.log
+            ${{ runner.temp }}/issue-90-git-prepare.stderr.log
           if-no-files-found: warn
