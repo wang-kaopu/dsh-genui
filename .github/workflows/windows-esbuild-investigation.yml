@@ -260,9 +260,11 @@ jobs:
         with:
           node-version: "24.18.0"
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.21.0
+      # Avoid pnpm/action-setup reading this checkout's packageManager field.
+      # The historical reproduction intentionally needs the reporter's pnpm.
+      - name: Install historical pnpm
+        shell: pwsh
+        run: npm install --global pnpm@11.21.0
 
       - name: Show environment
         shell: pwsh
