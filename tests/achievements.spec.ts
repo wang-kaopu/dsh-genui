@@ -3,7 +3,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { ACHIEVEMENTS, buildAchievementsSpec, checkAchievements, countSpecKinds, emptyState } from '../src/client/achievements.ts'
 import { getAchievementSnapshot, recordFence, recordInteraction, recordPanel, recordTemplateUse, subscribeAchievements } from '../src/client/achievement-store.ts'
-import { validateGenuiSpec } from '../src/client/guard.ts'
+import { isValidSpec } from './genui-runtime-helpers.ts'
 import type { GenuiSpec } from '../src/client/spec.ts'
 
 const SAMPLE: GenuiSpec = {
@@ -63,6 +63,15 @@ describe('埋点与持久化', () => {
     expect(s.advanced - before.advanced).toBe(1)
   })
 
+  it('图表/高级节点计数复用 runtime traversal，并保持 custom payload 不透明', () => {
+    const counts = countSpecKinds({ items: [
+      { type: 'card', items: [{ type: 'chart', data: [{ label: 'a', value: 1 }] }] },
+      { type: 'tabs', tabs: [{ label: '图', items: [{ type: 'diagram', kind: 'flowchart', nodes: [] }] }] },
+      { type: 'custom-renderer', payload: { type: 'echart' } },
+    ] } as unknown as GenuiSpec)
+    expect(counts).toEqual({ charts: 1, advanced: 1 })
+  })
+
   it('持久化：load 后保留', () => {
     recordFence(SAMPLE)
     const saved = localStorage.getItem('dsh.genui.achievements')
@@ -102,7 +111,6 @@ describe('埋点与持久化', () => {
 describe('成就页 spec', () => {
   it('生成的 spec 通过渲染器守卫', () => {
     const spec = buildAchievementsSpec({ ...emptyState(), fences: 5, charts: 2 }, { 'first-fence': 1 })
-    const v = validateGenuiSpec(spec)
-    expect(v.ok, v.errors.join('; ')).toBe(true)
+    expect(isValidSpec(spec)).toBe(true)
   })
 })

@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import css from '../GenuiBlock.module.css'
 import type { GenuiImage } from '../spec.ts'
 
-/** Native image display; source safety is enforced by repairGenuiSpec/safeMediaSrc. */
+/** Native image display; source safety is enforced by the protocol sanitizer. */
 export function ImageNode({ node }: { node: GenuiImage }): ReactNode {
   const [failed, setFailed] = useState(false)
 

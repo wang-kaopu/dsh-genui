@@ -3,8 +3,8 @@
  *
  * 每个模板 = 一段自然语言 `instruction`（试用时插入输入框，模型按 genui
  * skill 生成对应界面）+ 一份**合法**的 `demo` spec（预览时由 GenuiBlock
- * 直接渲染，用户先看到效果再决定试用）。字段对齐 spec.ts / guard.ts 的
- * 实际 schema（tests/templates.spec.ts 用 validateGenuiSpec 逐条校验）。
+ * 直接渲染，用户先看到效果再决定试用）。字段对齐 spec.ts / GenUI protocol 的
+ * 实际 schema（tests/templates.spec.ts 用协议兼容校验逐条校验）。
  *
  * 模板即说明书：覆盖布局/数据/图表/交互/测验/高级各能力面。
  */

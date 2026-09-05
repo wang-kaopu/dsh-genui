@@ -133,7 +133,7 @@ interface PanelOperation {
 3. 已存在 barrier：不晚于 barrier 的 append 可进入候选重算，更晚的 append 拒绝；replace 一律进候选（"最新 replace 胜"）。
 4. 用临时副本（不先改正式 Map），按三段 order 升序排序，从最新有效 replace 开始折叠，更早操作裁掉。
 5. `replace` 直接替换；`append` 复用纯函数 `mergePanelSpecs`（同标签 tabs 合并、其余尾部追加），append spec 必须至少一个有效节点。
-6. 每次 append 后用现有的 `validateGenuiSpec` 节点计数**复用同一遍历**；超过 `PANEL_LIMITS.maxNodes`（默认 200）→ 记为首个 overflow barrier，跳过它及更晚 append，保留此前合法快照。禁止第二套遍历，禁止把超限 spec 交给 React。
+6. 每次 append 后用 `processGenuiSpec` 的 `stats.renderedTotal` 节点计数**复用同一遍历**；超过 `PANEL_LIMITS.maxNodes`（默认 200）→ 记为首个 overflow barrier，跳过它及更晚 append，保留此前合法快照。禁止第二套遍历，禁止把超限 spec 交给 React。
 7. 最新 replace 之后最多保留 `PANEL_LIMITS.maxAppends`（默认 200）条 append；第 201 条即使节点没增长也按 barrier 规则要求下一次 replace。这是 operation Map 的内存上限——**拒绝而非 LRU 淘汰**，因为淘汰会破坏确定性折叠（结果依赖到达顺序），这是语义理由，不是"禁止 LRU"的教条。
 8. 候选快照、裁剪后的 Map、barrier 全部计算成功才一次性提交；校验异常保持旧状态；快照真正变化才通知一次。
 9. 更晚 replace 成功后清掉更早操作与旧 barrier；session 销毁时清空全部。

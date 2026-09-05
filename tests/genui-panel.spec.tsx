@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GENUI_ACTION_DEBOUNCE_MS } from '../src/client/GenuiBlock.tsx'
 import { renderGenuiFence } from '../src/client/index.tsx'
-import { repairGenuiSpec } from '../src/client/guard.ts'
+import { canonicalSpec } from './genui-runtime-helpers.ts'
 import { GenuiPanel } from '../src/client/panel.tsx'
 import {
   applyPanelOperation, clearSessionPanel, getPanelExpandToken, getPanelSpec, requestPanelExpand, setLocalPanel, setPanelLimits, subscribePanel,
@@ -265,9 +265,9 @@ describe('panel-only fences', () => {
   })
 
   it('repair keeps the panel flag', () => {
-    const repaired = repairGenuiSpec({ panel: true, items: [] })
+    const repaired = canonicalSpec({ panel: true, items: [] })
     expect(repaired?.panel).toBe(true)
-    expect(repairGenuiSpec({ panel: 'yes', items: [] })?.panel).toBeUndefined()
+    expect(canonicalSpec({ panel: 'yes', items: [] })?.panel).toBeUndefined()
   })
 })
 
@@ -277,6 +277,25 @@ describe('panel operation model (real order, no Infinity)', () => {
 
   afterEach(() => {
     setPanelLimits({ maxNodes: 200, maxAppends: 200 })
+  })
+
+  it('accepts a raw spec and stores the same canonical result as the runtime', () => {
+    const raw = {
+      title: '原始面板',
+      gap: 200,
+      items: [{ type: 'card', label: '卡片', content: [{ type: 'text', text: '正文' }] }],
+    }
+    expect(applyPanelOperation('s1', {
+      sourceId: 'raw:1',
+      order: [1, -1, 0],
+      mode: 'replace',
+      spec: raw as never,
+    })).toBe('accepted')
+    expect(getPanelSpec('s1')).toEqual({
+      title: '原始面板',
+      gap: 96,
+      items: [{ type: 'card', title: '卡片', items: [{ type: 'text', content: '正文' }] }],
+    })
   })
 
   it('rejects an older seq publish after a newer one', () => {

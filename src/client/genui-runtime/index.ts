@@ -1,0 +1,12 @@
+/** Public internal runtime protocol for all GenUI consumers. */
+export * from './types.ts'
+export * from './schema.ts'
+export * from './diagnostics.ts'
+export * from './normalize.ts'
+export * from './traverse.ts'
+export * from './validate.ts'
+export * from './sanitize.ts'
+export * from './process.ts'
+export * from './limits.ts'
+export * from './validators/chart.ts'
+export * from './validators/table.ts'

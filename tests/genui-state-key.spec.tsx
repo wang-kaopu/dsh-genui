@@ -2,10 +2,10 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GenuiBlock } from '../src/client/GenuiBlock.tsx'
-import { repairGenuiSpec } from '../src/client/guard.ts'
+import { canonicalSpec } from './genui-runtime-helpers.ts'
 import { loadBlockState, saveBlockState } from '../src/client/interaction-store.ts'
 
-const fieldSpec = repairGenuiSpec({
+const fieldSpec = canonicalSpec({
   items: [{ type: 'input', id: 'name', label: '姓名' }],
 })!
 
@@ -44,11 +44,11 @@ describe('GenUI durable state identity', () => {
   })
 
   it('keeps one volatile instance while an identity-less streaming spec grows', () => {
-    const first = repairGenuiSpec({
+    const first = canonicalSpec({
       title: '第一段',
       items: [{ type: 'input', id: 'name', label: '姓名' }],
     })!
-    const second = repairGenuiSpec({
+    const second = canonicalSpec({
       title: '第二段',
       items: [
         { type: 'input', id: 'name', label: '姓名' },

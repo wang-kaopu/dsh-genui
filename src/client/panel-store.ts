@@ -21,7 +21,7 @@
  *
  */
 import type { GenuiSpec, GenuiTab } from './spec.ts'
-import { countGenuiNodes } from './guard.ts'
+import { countGenuiNodes, isRenderableGenuiResult, processGenuiSpec } from './genui-runtime/index.ts'
 
 /** Panel scale limits — adjustable defaults (design doc: scale limits are
  *  configurable, not law). Folds read the CURRENT limits, so tuning applies
@@ -284,20 +284,26 @@ export type PanelOperationStatus = 'accepted' | 'idempotent' | 'blocked' | 'over
  * source (e.g. "panel at its node/appends budget — send a replace").
  */
 export function applyPanelOperation(sessionId: string, op: PanelOperation): PanelOperationStatus {
+  const processed = processGenuiSpec(op.spec)
+  if (!isRenderableGenuiResult(processed)) return 'blocked'
+  // Preserve identity for an already-canonical spec so replay dedup and
+  // subscriber behavior remain stable for callers that already processed it.
+  const canonicalSpec = JSON.stringify(processed.spec) === JSON.stringify(op.spec) ? op.spec : processed.spec
+  const canonicalOp = canonicalSpec === op.spec ? op : { ...op, spec: canonicalSpec }
   const state = stateOf(sessionId)
-  const result = fold(state, op)
+  const result = fold(state, canonicalOp)
   if (result === null) {
-    if (state.seen.has(op.sourceId) || state.overflow?.sourceId === op.sourceId) return 'idempotent'
+    if (state.seen.has(canonicalOp.sourceId) || state.overflow?.sourceId === canonicalOp.sourceId) return 'idempotent'
     // A rejection may come from the replay/local barriers (dead old content
     // — worth one diagnostic) or from the budget overflow barrier (a later
     // append beyond the panel budget — the budget diagnostic covers it).
     const laterThanOverflow = state.overflow !== null
-      && op.mode === 'append'
-      && compareOrder(op.order, state.overflow.order) > 0
-    if (!laterThanOverflow) diagnosePanelBlocked(sessionId, op, state)
+      && canonicalOp.mode === 'append'
+      && compareOrder(canonicalOp.order, state.overflow.order) > 0
+    if (!laterThanOverflow) diagnosePanelBlocked(sessionId, canonicalOp, state)
     return 'blocked'
   }
-  const status: PanelOperationStatus = result.overflow !== null && result.overflow.sourceId === op.sourceId
+  const status: PanelOperationStatus = result.overflow !== null && result.overflow.sourceId === canonicalOp.sourceId
     ? 'overflow'
     : 'accepted'
   const changed = state.snapshot !== result.snapshot

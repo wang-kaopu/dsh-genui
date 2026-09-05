@@ -1,4 +1,4 @@
-import { validateGenuiChartSemantics } from '../client/guard.ts'
+import { formatChartDiagnostics, processGenuiSpec } from '../client/genui-runtime/index.ts'
 
 /**
  * Validate chart nodes using the guard's shared native renderability contract.
@@ -9,5 +9,7 @@ import { validateGenuiChartSemantics } from '../client/guard.ts'
  * @returns Chart errors in deterministic tree order.
  */
 export function validateRenderableChartSemantics(value: unknown): string[] {
-  return validateGenuiChartSemantics(value)
+  const result = processGenuiSpec(value)
+  const formatted = formatChartDiagnostics(result.errors, '\n')
+  return formatted === null ? [] : formatted.split('\n')
 }

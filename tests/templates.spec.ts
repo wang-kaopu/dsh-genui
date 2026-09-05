@@ -1,18 +1,18 @@
 /**
  * templates.spec.ts — 模板中心数据契约：
- * 每条模板的 demo 必须通过 validateGenuiSpec（与渲染器同一守卫），
+ * 每条模板的 demo 必须通过 processGenuiSpec（与渲染器同一协议），
  * 规模在 GENUI_LIMITS 内，instruction 非空且含「dsh-ui」关键词。
  */
 import { describe, expect, it } from 'vitest'
 import { GENUI_TEMPLATES } from '../src/client/templates.ts'
-import { GENUI_LIMITS, validateGenuiSpec, countGenuiNodes } from '../src/client/guard.ts'
+import { GENUI_LIMITS, countGenuiNodes, processGenuiSpec } from '../src/client/genui-runtime/index.ts'
 
 describe('模板中心数据契约', () => {
   it('每条 demo 通过渲染器守卫校验', () => {
     const problems: string[] = []
     for (const tpl of GENUI_TEMPLATES) {
-      const v = validateGenuiSpec(tpl.demo)
-      if (!v.ok) problems.push(`${tpl.id} (${tpl.name}): ${v.errors.join('; ')}`)
+      const v = processGenuiSpec(tpl.demo)
+      if (v.errors.length > 0) problems.push(`${tpl.id} (${tpl.name}): ${v.errors.map(error => error.detail ?? error.code).join('; ')}`)
     }
     expect(problems).toEqual([])
   })

@@ -17,7 +17,7 @@ import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import { hasFenceRegistry } from './setup'
 import { GenuiActionContext } from '../src/client/action-context.ts'
 import { GenuiBlock } from '../src/client/GenuiBlock.tsx'
-import { repairGenuiSpec } from '../src/client/guard.ts'
+import { canonicalSpec } from './genui-runtime-helpers.ts'
 
 afterEach(cleanup)
 
@@ -50,7 +50,7 @@ function fenced(spec: unknown): string {
 function renderBlock(spec: unknown) {
   return render(
     <GenuiActionContext.Provider value={undefined}>
-      <GenuiBlock spec={repairGenuiSpec(spec)!} />
+      <GenuiBlock spec={canonicalSpec(spec)!} />
     </GenuiActionContext.Provider>,
   )
 }

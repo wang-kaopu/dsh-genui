@@ -10,12 +10,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GenuiBlock, GENUI_ACTION_DEBOUNCE_MS } from '../src/client/GenuiBlock.tsx'
 import { GenuiActionContext } from '../src/client/action-context.ts'
 import { parseSortableNumber } from '../src/client/blocks/charts.tsx'
-import { repairGenuiSpec } from '../src/client/guard.ts'
+import { canonicalSpec } from './genui-runtime-helpers.ts'
 
 afterEach(cleanup)
 
 function renderBlock(items: unknown[]) {
-  const spec = repairGenuiSpec({ items })!
+  const spec = canonicalSpec({ items })!
   const out = render(<GenuiBlock spec={spec} />)
   return out.container
 }
@@ -188,7 +188,7 @@ describe('live-region confirmations (a11y)', () => {
     vi.useFakeTimers()
     try {
       const actions: Array<[string, Record<string, unknown>]> = []
-      const spec = repairGenuiSpec({ items: [{ type: 'button', label: '刷新', action: 'refresh' }] })!
+      const spec = canonicalSpec({ items: [{ type: 'button', label: '刷新', action: 'refresh' }] })!
       const { container } = render(
         <GenuiActionContext.Provider value={(action, payload) => { actions.push([action, payload]) }}>
           <GenuiBlock spec={spec} />

@@ -3,7 +3,7 @@
 // spec for the browser toolview).
 import { describe, expect, it, vi } from 'vitest'
 import { createRenderUiTool, createValidateDshUiTool } from '../src/plugin/tool.ts'
-import { GENUI_LIMITS } from '../src/client/guard.ts'
+import { GENUI_LIMITS } from '../src/client/genui-runtime/index.ts'
 
 const tool = createRenderUiTool()
 
@@ -161,7 +161,7 @@ describe('render_ui projections', () => {
     expect((spec.items[1] as { value: number }).value).toBe(80)
   })
 
-  it('does not project an invalid repaired spec into result meta', () => {
+  it('does not project an out-of-range progress spec into result meta', () => {
     expect(tool.output.presentationMeta!({ spec: { items: [{ type: 'progress', value: 150 }] } })).toBeNull()
   })
 

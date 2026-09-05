@@ -1,31 +1,32 @@
 // GenUI spec guard: resource limits, deterministic repair, and validation.
 // Pure node tests — no DOM. The fence path runs every body through
-// `repairGenuiSpec` before rendering, so these invariants protect the UI.
+// `processGenuiSpec` before rendering, so these invariants protect the UI.
 import { describe, expect, it } from 'vitest'
-import { GENUI_LIMITS, countDeclaredGenuiNodes, countGenuiNodes, repairGenuiSpec, validateGenuiSpec } from '../src/client/guard.ts'
+import { GENUI_LIMITS, countGenuiNodes, processGenuiSpec } from '../src/client/genui-runtime/index.ts'
+import { canonicalSpec } from './genui-runtime-helpers.ts'
 import { type GenuiNode, type GenuiList, isGenuiSpec, parseGenuiSpec } from '../src/client/spec.ts'
 
 const text = (content: string) => ({ type: 'text', content })
 
-describe('repairGenuiSpec: root shape', () => {
+describe('canonicalSpec: root shape', () => {
   it('returns null for non-object roots', () => {
-    expect(repairGenuiSpec(null)).toBeNull()
-    expect(repairGenuiSpec('x')).toBeNull()
-    expect(repairGenuiSpec([])).toBeNull()
-    expect(repairGenuiSpec(42)).toBeNull()
+    expect(canonicalSpec(null)).toBeNull()
+    expect(canonicalSpec('x')).toBeNull()
+    expect(canonicalSpec([])).toBeNull()
+    expect(canonicalSpec(42)).toBeNull()
   })
 
   it('returns null when items is not an array', () => {
-    expect(repairGenuiSpec({ title: 'x' })).toBeNull()
-    expect(repairGenuiSpec({ items: 'nope' })).toBeNull()
-    expect(repairGenuiSpec({ items: {} })).toBeNull()
+    expect(canonicalSpec({ title: 'x' })).toBeNull()
+    expect(canonicalSpec({ items: 'nope' })).toBeNull()
+    expect(canonicalSpec({ items: {} })).toBeNull()
   })
 
   it('keeps title and clamps gap', () => {
-    const spec = repairGenuiSpec({ title: 'T', gap: 200, items: [text('a')] })
+    const spec = canonicalSpec({ title: 'T', gap: 200, items: [text('a')] })
     expect(spec?.title).toBe('T')
     expect(spec?.gap).toBe(96)
-    const spec2 = repairGenuiSpec({ gap: -10, items: [] })
+    const spec2 = canonicalSpec({ gap: -10, items: [] })
     expect(spec2?.gap).toBe(0)
   })
 
@@ -35,17 +36,17 @@ describe('repairGenuiSpec: root shape', () => {
         text('hi'), { type: 'stat', label: 'L', value: '1', delta: '+2%' },
       ],
     }
-    const once = repairGenuiSpec(input)
-    const twice = repairGenuiSpec(once)
+    const once = canonicalSpec(input)
+    const twice = canonicalSpec(once)
     expect(once).not.toBeNull()
     expect(twice).toEqual(once)
     expect(isGenuiSpec(once)).toBe(true)
   })
 })
 
-describe('repairGenuiSpec: single-component roots', () => {
+describe('canonicalSpec: single-component roots', () => {
   it('wraps a bare component root into a col (documented fence vocabulary)', () => {
-    const spec = repairGenuiSpec({ type: 'callout', tone: 'info', title: '核心观察', content: '你好' })
+    const spec = canonicalSpec({ type: 'callout', tone: 'info', title: '核心观察', content: '你好' })
     expect(spec).not.toBeNull()
     // The repaired GenuiSpec carries no `type` (root spec field set) — the
     // observable wrap effect is the items array holding the bare component.
@@ -55,7 +56,7 @@ describe('repairGenuiSpec: single-component roots', () => {
   })
 
   it('hoists panel/append from the bare component onto the wrapper', () => {
-    const spec = repairGenuiSpec({ type: 'text', content: 'x', panel: true, append: true })
+    const spec = canonicalSpec({ type: 'text', content: 'x', panel: true, append: true })
     expect(spec?.panel).toBe(true)
     expect(spec?.append).toBe(true)
     const inner = spec?.items[0] as { panel?: unknown; append?: unknown }
@@ -64,21 +65,21 @@ describe('repairGenuiSpec: single-component roots', () => {
   })
 
   it('still rejects non-component objects without an items array', () => {
-    expect(repairGenuiSpec({ title: 'x' })).toBeNull()
-    expect(repairGenuiSpec({ foo: 1 })).toBeNull()
+    expect(canonicalSpec({ title: 'x' })).toBeNull()
+    expect(canonicalSpec({ foo: 1 })).toBeNull()
   })
 
   it('idempotent: a wrapped single root repairs to itself', () => {
-    const once = repairGenuiSpec({ type: 'stat', label: 'L', value: '1' })
-    const twice = repairGenuiSpec(once)
+    const once = canonicalSpec({ type: 'stat', label: 'L', value: '1' })
+    const twice = canonicalSpec(once)
     expect(twice).toEqual(once)
   })
 })
 
-describe('validateGenuiSpec / parseGenuiSpec: single-component roots', () => {
+describe('runtime processing / parseGenuiSpec: single-component roots', () => {
   it('accepts a bare component as valid', () => {
-    const result = validateGenuiSpec({ type: 'callout', tone: 'info', title: 'T', content: 'c' })
-    expect(result.ok).toBe(true)
+    const result = processGenuiSpec({ type: 'callout', tone: 'info', title: 'T', content: 'c' })
+    expect(result.errors).toEqual([])
   })
 
   it('parseGenuiSpec wraps a single-component fence body', () => {
@@ -93,9 +94,9 @@ describe('validateGenuiSpec / parseGenuiSpec: single-component roots', () => {
   })
 })
 
-describe('repairGenuiSpec: node-level healing', () => {
+describe('canonicalSpec: node-level healing', () => {
   it('drops nodes with missing required fields', () => {
-    const spec = repairGenuiSpec({ items: [
+    const spec = canonicalSpec({ items: [
       { type: 'text' }, // no content
       { type: 'button' }, // no label
       { type: 'table', columns: ['a'] }, // no rows
@@ -112,7 +113,7 @@ describe('repairGenuiSpec: node-level healing', () => {
     // Models sometimes reuse ask_user_question's {label,description} shape for
     // select/radio options; the guard must extract readable text instead of
     // silently dropping every option (empty list = "options not rendered").
-    const spec = repairGenuiSpec({ items: [
+    const spec = canonicalSpec({ items: [
       { type: 'radio', label: 'Q', group: 'q', options: [
         { label: '甲方案', description: '说明' },
         { value: '乙方案' },
@@ -127,7 +128,7 @@ describe('repairGenuiSpec: node-level healing', () => {
   })
 
   it('clamps out-of-range numbers', () => {
-    const spec = repairGenuiSpec({ items: [
+    const spec = canonicalSpec({ items: [
       { type: 'progress', value: 150 },
       { type: 'progress', value: -5 },
       { type: 'grid', cols: 40, items: [] },
@@ -139,18 +140,18 @@ describe('repairGenuiSpec: node-level healing', () => {
   })
 
   it('clamps non-integer grid cols', () => {
-    const spec = repairGenuiSpec({ items: [{ type: 'grid', cols: 3.7, items: [] }] })
+    const spec = canonicalSpec({ items: [{ type: 'grid', cols: 3.7, items: [] }] })
     expect((spec!.items[0] as { cols: number }).cols).toBe(3)
   })
 
   it('truncates oversized strings', () => {
     const long = 'x'.repeat(5000)
-    const spec = repairGenuiSpec({ items: [text(long)] })
+    const spec = canonicalSpec({ items: [text(long)] })
     expect((spec!.items[0] as { content: string }).content).toHaveLength(GENUI_LIMITS.maxString)
   })
 
   it('keeps safe media URLs and rejects active or local schemes', () => {
-    const spec = repairGenuiSpec({ items: [
+    const spec = canonicalSpec({ items: [
       { type: 'audio', src: '/mmx-files/a.mp3', alt: 'A', loop: true },
       { type: 'video', src: 'https://cdn.example.com/b.mp4', poster: '/b.jpg', aspectRatio: '4:3', muted: true },
       { type: 'audio', src: 'javascript:alert(1)' },
@@ -164,7 +165,7 @@ describe('repairGenuiSpec: node-level healing', () => {
   })
 
   it('truncates oversized code and mermaid bodies', () => {
-    const spec = repairGenuiSpec({ items: [
+    const spec = canonicalSpec({ items: [
       { type: 'code', code: 'x'.repeat(GENUI_LIMITS.maxCode + 100) },
       { type: 'mermaid', code: 'y'.repeat(GENUI_LIMITS.maxMermaid + 100) },
     ] })
@@ -174,7 +175,7 @@ describe('repairGenuiSpec: node-level healing', () => {
 
   it('caps array-backed nodes (tabs, meshes, options, rows)', () => {
     const many = (n: number) => Array.from({ length: n }, (_, i) => ({ label: `t${i}`, items: [] }))
-    const spec = repairGenuiSpec({ items: [
+    const spec = canonicalSpec({ items: [
       { type: 'tabs', tabs: many(30) },
       { type: 'scene3d', meshes: Array.from({ length: 20 }, () => ({ shape: 'box' as const })) },
       { type: 'select', options: Array.from({ length: 80 }, (_, i) => `o${i}`) },
@@ -188,14 +189,14 @@ describe('repairGenuiSpec: node-level healing', () => {
   })
 
   it('caps total node count', () => {
-    const spec = repairGenuiSpec({ items: Array.from({ length: 500 }, (_, i) => text(`n${i}`)) })
+    const spec = canonicalSpec({ items: Array.from({ length: 500 }, (_, i) => text(`n${i}`)) })
     expect(spec!.items).toHaveLength(GENUI_LIMITS.maxNodes)
   })
 
   it('caps nesting depth', () => {
     let node: unknown = text('leaf')
     for (let i = 0; i < 30; i++) node = { type: 'col', items: [node] }
-    const spec = repairGenuiSpec({ items: [node] })
+    const spec = canonicalSpec({ items: [node] })
     let cur: unknown = spec!.items[0]
     let depth = 0
     while (cur !== undefined && typeof cur === 'object') {
@@ -208,7 +209,7 @@ describe('repairGenuiSpec: node-level healing', () => {
   })
 
   it('drops invalid chart without data or series but keeps series-only charts', () => {
-    const spec = repairGenuiSpec({ items: [
+    const spec = canonicalSpec({ items: [
       { type: 'chart' },
       { type: 'chart', series: [{ label: 's', data: [{ label: 'a', value: 1 }] }] },
     ] })
@@ -218,13 +219,13 @@ describe('repairGenuiSpec: node-level healing', () => {
 
   it('passes unknown node types through untouched (custom components)', () => {
     const custom = { type: 'my-widget', flavor: 'pink', data: { a: [1, 2] } }
-    const spec = repairGenuiSpec({ items: [custom] })
+    const spec = canonicalSpec({ items: [custom] })
     expect(spec!.items).toHaveLength(1)
     expect(spec!.items[0]).toEqual(custom)
   })
 
   it('sanitizes raw scalars inside collections', () => {
-    const spec = repairGenuiSpec({ items: [
+    const spec = canonicalSpec({ items: [
       { type: 'list', items: ['ok', 42, { title: 't' }, null] },
       { type: 'keyvalue', pairs: [{ key: 'k', value: 'v' }, { key: 1, value: 'x' }] },
     ] })
@@ -235,9 +236,9 @@ describe('repairGenuiSpec: node-level healing', () => {
   })
 })
 
-describe('repairGenuiSpec: table / tabs tolerance (issue #42)', () => {
+describe('canonicalSpec: table / tabs tolerance (issue #42)', () => {
   it('flattens object columns and object-array rows (data alias) into a real table', () => {
-    const spec = repairGenuiSpec({ items: [
+    const spec = canonicalSpec({ items: [
       { type: 'table',
         columns: [{ title: '名称', key: 'name' }, { title: '数量', dataIndex: 'count' }],
         data: [
@@ -251,7 +252,7 @@ describe('repairGenuiSpec: table / tabs tolerance (issue #42)', () => {
   })
 
   it('keys object rows by the first row when columns are plain strings', () => {
-    const spec = repairGenuiSpec({ items: [
+    const spec = canonicalSpec({ items: [
       { type: 'table', columns: ['a', 'b'], rows: [{ a: 1, b: 'two' }] },
     ] })
     const table = spec?.items[0] as { rows: Array<Array<string | number>> }
@@ -259,7 +260,7 @@ describe('repairGenuiSpec: table / tabs tolerance (issue #42)', () => {
   })
 
   it('accepts tabs[].content as an items alias (array or single component)', () => {
-    const spec = repairGenuiSpec({ items: [
+    const spec = canonicalSpec({ items: [
       { type: 'tabs', tabs: [
         { label: '一', content: [{ type: 'text', content: 'a' }, { type: 'badge', label: 'b' }] },
         { label: '二', content: { type: 'text', content: 'c' } },
@@ -281,7 +282,7 @@ describe('node counting: container descent + declared nodes (issue #42)', () => 
     expect(countGenuiNodes(tree)).toBe(8)
   })
 
-  it('countDeclaredGenuiNodes walks the same containers and skips non-node "type" strings', () => {
+  it('process stats count the same containers and skip non-node "type" strings', () => {
     const tree = { items: [
       { type: 'row', items: [text('a')] },
       { type: 'file-tree', items: [
@@ -290,17 +291,17 @@ describe('node counting: container descent + declared nodes (issue #42)', () => 
     ] }
     // row + text + the file-tree node itself; the dir/file children are not
     // GenUI nodes and must not count.
-    expect(countDeclaredGenuiNodes(tree)).toBe(3)
+    expect(processGenuiSpec(tree).stats.declaredNative).toBe(3)
   })
 
-  it('countDeclaredGenuiNodes counts a single-component root', () => {
-    expect(countDeclaredGenuiNodes({ type: 'callout', content: 'x' })).toBe(1)
+  it('process stats count a single-component root', () => {
+    expect(processGenuiSpec({ type: 'callout', content: 'x' }).stats.declaredNative).toBe(1)
   })
 })
 
-describe('repairGenuiSpec: list nodes', () => {
+describe('canonicalSpec: list nodes', () => {
   it('keeps row/text/badge children inside a list', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [
         {
           type: 'list',
@@ -330,7 +331,7 @@ describe('repairGenuiSpec: list nodes', () => {
   })
 
   it('keeps valid entries while dropping invalid typed list nodes', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [
         {
           type: 'list',
@@ -354,7 +355,7 @@ describe('repairGenuiSpec: list nodes', () => {
 
   it('charges typed list children against the shared node budget', () => {
     const badges = (n: number) => Array.from({ length: n }, (_, i) => ({ type: 'badge' as const, label: `b${i}` }))
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [
         { type: 'list', items: badges(50) },
         { type: 'list', items: badges(50) },
@@ -375,7 +376,7 @@ describe('repairGenuiSpec: list nodes', () => {
   })
 
   it('keeps title-objects, strings, and typed nodes interleaved in order', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [
         {
           type: 'list',
@@ -398,7 +399,7 @@ describe('repairGenuiSpec: list nodes', () => {
   })
 
   it('prefers the title form when an object carries both title and type', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [
         { type: 'list', items: [{ title: 'T', desc: 'D', type: 'badge', label: 'B' }] },
       ],
@@ -427,43 +428,48 @@ describe('repairGenuiSpec: list nodes', () => {
   })
 })
 
-describe('validateGenuiSpec: diagnostics', () => {
+describe('runtime diagnostics', () => {
   it('passes a well-formed spec', () => {
-    const result = validateGenuiSpec({ items: [text('a'), { type: 'progress', value: 50 }] })
-    expect(result.ok).toBe(true)
+    const result = processGenuiSpec({ items: [text('a'), { type: 'progress', value: 50 }] })
     expect(result.errors).toEqual([])
   })
 
   it('reports missing required fields with paths', () => {
-    const result = validateGenuiSpec({ items: [text('a'), { type: 'button' }] })
-    expect(result.ok).toBe(false)
-    expect(result.errors.join('\n')).toContain('items[1]')
-    expect(result.errors.join('\n')).toContain('label')
+    const result = processGenuiSpec({ items: [text('a'), { type: 'button' }] })
+    expect(result.errors).toContainEqual(expect.objectContaining({
+      code: 'FIELD_REQUIRED',
+      path: 'items[1].label',
+      field: 'label',
+    }))
   })
 
   it('reports out-of-range progress and deep nesting', () => {
     let node: unknown = text('x')
     for (let i = 0; i < 20; i++) node = { type: 'card', items: [node] }
-    const result = validateGenuiSpec({ items: [{ type: 'progress', value: 120 }, node] })
-    expect(result.ok).toBe(false)
-    expect(result.errors.join('\n')).toContain('0..100')
-    expect(result.errors.join('\n')).toContain('max depth')
+    const result = processGenuiSpec({ items: [{ type: 'progress', value: 120 }, node] })
+    expect(result.errors).toContainEqual(expect.objectContaining({
+      code: 'FIELD_RANGE',
+      path: 'items[0].value',
+    }))
+    expect(result.errors).toContainEqual(expect.objectContaining({ code: 'MAX_DEPTH' }))
   })
 
   it('reports the node budget', () => {
-    const result = validateGenuiSpec({ items: Array.from({ length: 500 }, (_, i) => text(`n${i}`)) })
-    expect(result.ok).toBe(false)
-    expect(result.errors.join('\n')).toContain(`${GENUI_LIMITS.maxNodes} nodes`)
+    const result = processGenuiSpec({ items: Array.from({ length: 500 }, (_, i) => text(`n${i}`)) })
+    expect(result.errors).toContainEqual(expect.objectContaining({
+      code: 'NODE_LIMIT',
+      expected: GENUI_LIMITS.maxNodes,
+    }))
   })
 
-  it('flags unknown types as custom-renderer warnings', () => {
-    const result = validateGenuiSpec({ items: [{ type: 'my-widget' }] })
-    expect(result.ok).toBe(false)
-    expect(result.errors.join('\n')).toContain("unknown type 'my-widget'")
+  it('keeps unknown types opaque for custom renderers', () => {
+    const result = processGenuiSpec({ items: [{ type: 'my-widget' }] })
+    expect(result.errors).toEqual([])
+    expect(result.spec?.items).toEqual([{ type: 'my-widget' }])
   })
 
   it('accepts text/badge aliases the same way repair does', () => {
-    const result = validateGenuiSpec({
+    const result = processGenuiSpec({
       items: [
         {
           type: 'list',
@@ -476,21 +482,21 @@ describe('validateGenuiSpec: diagnostics', () => {
         },
       ],
     })
-    expect(result.ok).toBe(true)
     expect(result.errors).toEqual([])
   })
 
   it('still rejects text/badge without any accepted label field', () => {
-    const result = validateGenuiSpec({ items: [{ type: 'text' }, { type: 'badge' }] })
-    expect(result.ok).toBe(false)
-    expect(result.errors.join('\n')).toContain("requires content or text")
-    expect(result.errors.join('\n')).toContain("requires label, text, or value")
+    const result = processGenuiSpec({ items: [{ type: 'text' }, { type: 'badge' }] })
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'FIELD_REQUIRED', path: 'items[0].content' }),
+      expect.objectContaining({ code: 'FIELD_REQUIRED', path: 'items[1].label' }),
+    ]))
   })
 })
 
-describe('repairGenuiSpec: color field whitelist (CSS injection channel)', () => {
+describe('canonicalSpec: color field whitelist (CSS injection channel)', () => {
   it('keeps hex / rgb / hsl / host-token colors', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [
         { type: 'avatar', name: 'A', color: '#4f8ef7' },
         { type: 'chart', data: [{ label: 'x', value: 1, color: 'rgb(10, 20, 30)' }] },
@@ -507,7 +513,7 @@ describe('repairGenuiSpec: color field whitelist (CSS injection channel)', () =>
   })
 
   it('drops url()/javascript:/garbage values (degrade to default palette)', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [
         { type: 'avatar', name: 'A', color: 'url(https://evil.example/track?u=1)' },
         { type: 'chart', data: [{ label: 'x', value: 1, color: 'javascript:alert(1)' }] },

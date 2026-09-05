@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { cleanup, fireEvent, render } from '@testing-library/react'
 import { GenuiBlock } from '../src/client/GenuiBlock.tsx'
-import { repairGenuiSpec } from '../src/client/guard.ts'
+import { canonicalSpec } from './genui-runtime-helpers.ts'
 
 afterEach(cleanup)
 
 describe('GenUI native media', () => {
   it('renders user-controlled audio without autoplay', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [{
         type: 'audio',
         src: '/mmx-files/sample.mp3',
@@ -30,7 +30,7 @@ describe('GenUI native media', () => {
   })
 
   it('renders user-controlled video with poster and aspect ratio', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [{
         type: 'video',
         src: 'https://cdn.example.com/result.mp4',
@@ -60,7 +60,7 @@ describe('GenUI native media', () => {
   })
 
   it('shows an honest fallback when media cannot be played', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [
         { type: 'audio', src: '/mmx-files/missing.mp3', alt: '试听' },
         { type: 'video', src: '/mmx-files/missing.mp4', alt: '预览' },

@@ -3,13 +3,13 @@
 import { describe, expect, it } from 'vitest'
 import { createPanelSlashSource, DEFAULT_PANEL_SPEC } from '../src/client/panel-command.ts'
 import { getPanelExpandToken, getPanelSpec } from '../src/client/panel-store.ts'
-import { repairGenuiSpec } from '../src/client/guard.ts'
+import { canonicalSpec } from './genui-runtime-helpers.ts'
 
 const SID = 'panel-command-test'
 
 describe('DEFAULT_PANEL_SPEC', () => {
   it('is a valid repairable spec', () => {
-    const repaired = repairGenuiSpec(DEFAULT_PANEL_SPEC)
+    const repaired = canonicalSpec(DEFAULT_PANEL_SPEC)
     expect(repaired).not.toBeNull()
     expect(repaired!.title).toBe('GenUI 面板')
     expect(repaired!.items.length).toBeGreaterThan(3)

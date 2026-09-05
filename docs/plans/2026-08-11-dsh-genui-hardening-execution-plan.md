@@ -315,7 +315,7 @@ mode = 'replace'
 3. 已存在 overflow barrier 时，排序不晚于 barrier 的新旧 append 仍可进入候选重算；更晚的 append 直接拒绝。任何 replace 都进入候选，由“最新 replace”规则判断是否有效；这样乱序到达但位于 barrier 前的 replace 也能正确重开后续 append。
 4. 不先修改正式 Map；把现有 overflow operation 与新 operation 一起加入临时副本，按三段 `order` 升序排序，从最新有效 replace 开始候选折叠，更早操作直接裁掉。
 5. `replace` 直接替换；`append` 复用现有纯函数 `mergePanelSpecs`。接受 append 的 spec 必须至少有一个有效节点。
-6. 每次 append merge 后复用现有 `validateGenuiSpec` 的全树节点计数；候选结果超过 200 节点时，把这一条记为首个 overflow barrier，跳过它以及排序更晚的 append，保留此前合法 snapshot。不得另写第二套节点遍历，也不得把 201 节点交给 React。
+6. 每次 append merge 后复用 `processGenuiSpec` 的 `stats.renderedTotal` 节点计数；候选结果超过 200 节点时，把这一条记为首个 overflow barrier，跳过它以及排序更晚的 append，保留此前合法 snapshot。不得另写第二套节点遍历，也不得把 201 节点交给 React。
 7. 同一 latest replace 之后最多保留 200 条 append operation，直接复用 `GENUI_LIMITS.maxNodes` 这个 200，不新增另一项配置；第 201 条即使节点数仍未增长，也按同一 overflow barrier 规则要求下一次使用 replace。这是 operation Map 的明确内存上限。
 8. 候选 snapshot、裁剪后的 Map、overflow barrier 全部计算成功后才一次性提交；任何校验异常都保持旧正式状态。snapshot 真正变化时才通知一次。
 9. 更晚 replace 成功后，删除更早 operations 与旧 overflow barrier；session 销毁时清空 Map、barrier、snapshot 与订阅者。

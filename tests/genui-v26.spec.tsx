@@ -11,7 +11,7 @@ import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import { hasFenceRegistry } from './setup'
 import { GenuiActionContext } from '../src/client/action-context.ts'
 import { GENUI_ACTION_DEBOUNCE_MS } from '../src/client/GenuiBlock.tsx'
-import { repairGenuiSpec, validateGenuiSpec } from '../src/client/guard.ts'
+import { canonicalSpec, isValidSpec } from './genui-runtime-helpers.ts'
 
 afterEach(() => {
   cleanup()
@@ -190,7 +190,7 @@ describe.skipIf(!hasFenceRegistry)('v2.6: button local click feedback', () => {
 
 describe.skipIf(!hasFenceRegistry)('v2.6: guard coverage', () => {
   it('repair keeps radio answer (index + label) / explanation and submit resetAction', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [
         { type: 'radio', label: 'q', group: 'g', answer: 2, explanation: '因为…', options: ['a', 'b', 'c'] },
         { type: 'radio', label: 'q2', group: 'g2', answer: 'c', options: ['a', 'b', 'c'] },
@@ -205,7 +205,7 @@ describe.skipIf(!hasFenceRegistry)('v2.6: guard coverage', () => {
   })
 
   it('repair drops an out-of-range answer index and keeps a valid one', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [
         { type: 'radio', label: 'q', group: 'g', answer: 99, options: ['a', 'b'] },
         { type: 'radio', label: 'q2', group: 'g2', answer: 1, options: ['a', 'b'] },
@@ -217,12 +217,12 @@ describe.skipIf(!hasFenceRegistry)('v2.6: guard coverage', () => {
   })
 
   it('validate accepts the new optional fields', () => {
-    const result = validateGenuiSpec({
+    const result = isValidSpec({
       items: [
         { type: 'radio', label: 'q', group: 'g', answer: 0, explanation: 'x', options: ['a'] },
         { type: 'submit', label: '交卷', action: 'g', resetAction: 'r', groups: ['g'] },
       ],
     })
-    expect(result.ok).toBe(true)
+    expect(result).toBe(true)
   })
 })

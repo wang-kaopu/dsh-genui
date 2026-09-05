@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { cleanup, fireEvent, render } from '@testing-library/react'
 import { GenuiBlock } from '../src/client/GenuiBlock.tsx'
-import { repairGenuiSpec, validateGenuiSpec } from '../src/client/guard.ts'
+import { canonicalSpec, isValidSpec } from './genui-runtime-helpers.ts'
 
 afterEach(cleanup)
 
 describe('GenUI image', () => {
   it('renders a browser-reachable image lazily', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [{
         type: 'image',
         src: '/mmx-files/result.png',
@@ -26,10 +26,10 @@ describe('GenUI image', () => {
   })
 
   it('accepts http(s) sources and rejects local or active schemes', () => {
-    const safe = repairGenuiSpec({
+    const safe = canonicalSpec({
       items: [{ type: 'image', src: 'https://cdn.example.com/result.png' }],
     })!
-    const unsafe = repairGenuiSpec({
+    const unsafe = canonicalSpec({
       items: [
         { type: 'image', src: 'file:///tmp/result.png' },
         { type: 'image', src: 'data:image/png;base64,AAAA' },
@@ -38,7 +38,7 @@ describe('GenUI image', () => {
       ],
     })!
 
-    expect(validateGenuiSpec({ items: [{ type: 'image', src: '/mmx-files/result.png' }] })).toEqual({ ok: true, errors: [] })
+    expect(isValidSpec({ items: [{ type: 'image', src: '/mmx-files/result.png' }] })).toBe(true)
     expect(unsafe.items).toEqual([])
 
     const { container: safeContainer, unmount } = render(<GenuiBlock spec={safe} />)
@@ -50,7 +50,7 @@ describe('GenUI image', () => {
   })
 
   it('shows an honest fallback when the image cannot be loaded', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [{ type: 'image', src: '/mmx-files/missing.png', alt: '预览' }],
     })!
 

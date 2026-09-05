@@ -3,7 +3,7 @@
  * an interactive card in the conversation TOOL ROW (route A of the design
  * doc). The ```dsh-ui fence channel renders inline in the reply; this tool
  * renders in the tool row and rides the harness's result `meta` projection:
- * `presentationMeta` stores the repaired spec, the browser toolview
+ * `presentationMeta` stores the sanitized spec, the browser toolview
  * (`src/client/toolview.tsx`) reads it from the result node and renders.
  *
  * Zero runtime harness imports, deliberately: an external plugin's node half
@@ -13,7 +13,7 @@
  * the arguments schema authored as JSON Schema (the harness validates args
  * and output with the same JSON Schema validator defineTool uses). Deep
  * validation, deterministic repair, and resource limits live in the shared
- * guard (`src/client/guard.ts`), which the schema deliberately stays loose
+ * GenUI protocol, which the schema deliberately stays loose
  * enough to reach.
  * @module @changfenhuang/dsh-genui/plugin/tool
  */
@@ -22,9 +22,10 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import type { GenericCallView, GenericResultView, JsonSchemaNode, ToolDefinition } from '@deepseek-ai/dsh-tools'
 import {
-  isRenderableProcess, processGenuiSpec,
-} from '../client/guard.ts'
-import type { GenuiProcessResult } from '../client/guard.ts'
+  formatChartDiagnostics, formatDiagnostic, formatDiagnostics, formatDroppedNodeFailure,
+  isRenderableGenuiResult, processGenuiSpec,
+} from '../client/genui-runtime/index.ts'
+import type { GenuiProcessResult } from '../client/genui-runtime/index.ts'
 import { completeFenceJson } from '../shared/fence-repair.ts'
 
 /**
@@ -143,34 +144,27 @@ function processRenderableValue(value: unknown): GenuiProcessResult {
 /** Render process diagnostics as stable model-facing warning lines. */
 function formatProcessWarnings(processed: GenuiProcessResult): string[] {
   return processed.warnings.map(warning => {
-    if (warning.kind === 'alias' && warning.canonical !== undefined) {
+    if (warning.code === 'FIELD_ALIAS' && warning.canonical !== undefined) {
       const separator = warning.path.lastIndexOf('.')
       const canonicalPath = `${separator < 0 ? '' : warning.path.slice(0, separator + 1)}${warning.canonical}`
-      return warning.message.includes('ignored')
+      return warning.aliasIgnored === true
         ? `⚠️ 已忽略别名字段：${warning.path} → ${canonicalPath}（ignored because canonical field '${warning.canonical}' is present）`
         : `⚠️ 已规范化字段：${warning.path} → ${canonicalPath}（normalized/adopted as '${warning.canonical}'）`
     }
-    return `⚠️ ${warning.message}`
+    return `⚠️ ${formatDiagnostic(warning)}`
   })
 }
 
 /** Format chart-specific process errors while keeping other schema errors generic. */
 function formatProcessFailure(processed: GenuiProcessResult): string | undefined {
-  const chartErrors = processed.errors.filter(error => /(?:variant is unsupported|kind must be bars, line, or donut|requires data or series|(?:data|series) is required for|(?:\.data|\.series)(?:\[\d+\])?(?:\.(?:data|label|value|color))? must|series is only supported for bars)/.test(error))
-  return chartErrors.length === 0 ? undefined : `❌ chart 字段验证失败：\n- ${chartErrors.join('\n- ')}`
-}
-
-/** Return the legacy validation text for a process that dropped native nodes. */
-function droppedNodeFailure(processed: GenuiProcessResult): string | undefined {
-  if (!processed.errors.some(error => error.startsWith('repair dropped '))) return undefined
-  const dropped = processed.declaredNativeCount - processed.renderedNativeCount
-  return `❌ 验证未通过：检测到声明了 ${processed.declaredNativeCount} 个组件，但仅成功解析出 ${processed.renderedNativeCount} 个（有 ${dropped} 个组件因字段格式异常被丢弃）。常见原因：table 的 columns/rows 不是二维字符串数组、tabs 的 items/content 缺失、嵌套组件字段类型不符。请修正后重新验证。`
+  const chartErrors = formatChartDiagnostics(processed.errors, '\n- ')
+  return chartErrors === null ? undefined : `❌ chart 字段验证失败：\n- ${chartErrors}`
 }
 
 /** Tool-call title shared by the pending and completed presentations. */
 function cardTitle(args: unknown): string | undefined {
   const processed = processRenderableValue(specOf(args))
-  if (!isRenderableProcess(processed) || processed.spec === null) return undefined
+  if (!isRenderableGenuiResult(processed) || processed.spec === null) return undefined
   return `渲染 UI：${processed.spec.title ?? '未命名'}`
 }
 
@@ -196,7 +190,7 @@ export function createRenderUiTool(): ToolDefinition {
         // spec is JSON-safe by construction (only string/number/boolean/array
         // fields after repair), so the widening cast is lossless.
         const processed = processRenderableValue(specOf(args))
-        return (isRenderableProcess(processed) ? processed.spec : null) as unknown as JsonValue
+        return (isRenderableGenuiResult(processed) ? processed.spec : null) as unknown as JsonValue
       },
     },
     async execute(args: unknown): Promise<JsonValue> {
@@ -204,14 +198,14 @@ export function createRenderUiTool(): ToolDefinition {
       if (processed.spec === null) {
         return 'render_ui：spec 无效 —— 根对象需要 "items" 数组（组件树白名单见系统提示词），请修正后重试。'
       }
-      if (!isRenderableProcess(processed)) {
-        throw new Error('render_ui spec invalid: ' + processed.errors.join('; '))
+      if (!isRenderableGenuiResult(processed)) {
+        throw new Error('render_ui spec invalid: ' + formatDiagnostics(processed.errors, '; '))
       }
       const spec = processed.spec
       const title = spec.title ?? '未命名'
       const warnings = formatProcessWarnings(processed)
       const warningText = warnings.length === 0 ? '' : `\n${warnings.join('\n')}`
-      return `已渲染 UI「${title}」（${processed.renderedCount} 个组件）。用户现在可以看到这张卡片；组件带 action 时，用户交互会以 [genui-action] 消息发回给你，届时请重新渲染更新后的界面。${warningText}`
+      return `已渲染 UI「${title}」（${processed.stats.renderedTotal} 个组件）。用户现在可以看到这张卡片；组件带 action 时，用户交互会以 [genui-action] 消息发回给你，届时请重新渲染更新后的界面。${warningText}`
     },
     presentCall(args: unknown): GenericCallView | undefined {
       const title = cardTitle(args)
@@ -343,7 +337,7 @@ export function createValidateDshUiTool(): ToolDefinition {
           const processed = processRenderableValue(repairedValue)
           const chartFailure = formatProcessFailure(processed)
           if (chartFailure !== undefined) return chartFailure
-          if (processed.spec !== null && processed.errors.length === 0) {
+          if (isRenderableGenuiResult(processed)) {
             const warnings = formatProcessWarnings(processed)
             const warningText = warnings.length === 0 ? '' : `${warnings.join('\n')}\n`
             return `❌ dsh-ui 围栏 JSON 解析失败：${detail}。\n${bracketDiagnostic(raw)}${warningText}  已自动修复 ${repaired.repairs} 处，下面是修复后的 JSON，直接作为围栏正文发出即可（无需再验证）：\n\`\`\`\n${repaired.text}\n\`\`\``
@@ -354,12 +348,12 @@ export function createValidateDshUiTool(): ToolDefinition {
       const processed = processRenderableValue(parsed)
       const chartFailure = formatProcessFailure(processed)
       if (chartFailure !== undefined) return chartFailure
-      if (processed.spec === null || processed.errors.length > 0) {
-        return droppedNodeFailure(processed)
-          ?? `❌ 不是合法 GenUI spec：${processed.errors.join('；') || '根对象需要 "items" 数组，且每个节点 type 必须在白名单内（见系统提示词）'}。请修正后重新验证。`
+      if (!isRenderableGenuiResult(processed)) {
+        return formatDroppedNodeFailure(processed)
+          ?? `❌ 不是合法 GenUI spec：${formatDiagnostics(processed.errors) || '根对象需要 "items" 数组，且每个节点 type 必须在白名单内（见系统提示词）'}。请修正后重新验证。`
       }
       const warnings = formatProcessWarnings(processed)
-      return [`✅ dsh-ui spec 合法（${processed.renderedCount} 个组件），可以发出围栏。`, ...warnings].join('\n')
+      return [`✅ dsh-ui spec 合法（${processed.stats.renderedTotal} 个组件），可以发出围栏。`, ...warnings].join('\n')
     },
     presentCall(): GenericCallView | undefined {
       return { card: 'generic', title: '验证 dsh-ui 围栏', kind: 'other' }

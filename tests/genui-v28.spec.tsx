@@ -14,7 +14,7 @@ import { registerGenuiComponent } from './host-registry.ts'
 import { hasFenceRegistry } from './setup'
 import { GenuiActionContext } from '../src/client/action-context.ts'
 import { GenuiBlock, GENUI_ACTION_DEBOUNCE_MS } from '../src/client/GenuiBlock.tsx'
-import { repairGenuiSpec } from '../src/client/guard.ts'
+import { canonicalSpec } from './genui-runtime-helpers.ts'
 
 afterEach(() => {
   cleanup()
@@ -27,7 +27,7 @@ beforeEach(() => {
 function renderBlock(spec: unknown, actions: Array<[string, Record<string, unknown>]> = []) {
   return render(
     <GenuiActionContext.Provider value={(a, p) => actions.push([a, p])}>
-      <GenuiBlock spec={repairGenuiSpec(spec)!} />
+      <GenuiBlock spec={canonicalSpec(spec)!} />
     </GenuiActionContext.Provider>,
   )
 }
@@ -40,7 +40,7 @@ describe.skipIf(!hasFenceRegistry)('v2.8: memo comparator (streaming re-parse sk
       return <div data-probe>{node.label ?? 'probe'}</div>
     })
     try {
-      const spec = repairGenuiSpec({
+      const spec = canonicalSpec({
         items: [
           { type: 'text', content: '静态' },
           { type: 'probe', label: 'P' },
@@ -62,7 +62,7 @@ describe.skipIf(!hasFenceRegistry)('v2.8: memo comparator (streaming re-parse sk
       // Content actually changed → the block re-renders.
       rerender(
         <GenuiActionContext.Provider value={undefined}>
-          <GenuiBlock spec={repairGenuiSpec({
+          <GenuiBlock spec={canonicalSpec({
             items: [
               { type: 'text', content: '静态' },
               { type: 'probe', label: 'Q' },
@@ -142,7 +142,7 @@ describe('v2.8: honest link rendering', () => {
   })
 
   it('drops non-http(s) href schemes in the guard', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [{ type: 'link', label: 'x', href: 'javascript:alert(1)' }],
     })
     expect(spec?.items[0]).toMatchObject({ type: 'link', label: 'x' })

@@ -175,8 +175,8 @@ src/client/blocks/diagram/
 **接入点:**
 - `src/client/spec.ts` — 新增 `GenuiDiagram` / `GenuiDiagramNode` / `GenuiDiagramEdge` 接口,并入 `GenuiNode` 联合。
 - `src/client/blocks/render-node.tsx` — `case 'diagram': return <DiagramNode .../>`。
-- `src/client/guard.ts` — 新增 `maxDiagramNodes`(9)/`maxDiagramEdges`(12)/`maxDiagramZones`(3)等上限,
-  并在 `repairGenuiSpec` 里按 kind 钳制(未知 kind 降级为 `architecture` 或丢弃)。
+- `src/client/genui-runtime/schema.ts` / `sanitize.ts` — 声明 diagram 的字段、上限和按 kind 的清洗规则
+  (未知 kind 降级为 `architecture` 或丢弃)。
 - `src/client/GenuiBlock.module.css` — diagram 容器样式(尺寸、边框、可访问焦点)。
 - `src/plugin/index.ts` 的 `GENUI_SECTION_TEXT` + `SKILL.md` — 教模型 `diagram` 语法。
 
@@ -242,5 +242,5 @@ src/client/blocks/diagram/
 
 - diagram-design:[README](https://github.com/cathrynlavery/diagram-design)、
   `skills/diagram-design/SKILL.md`(v2.4)、`references/style-guide.md`、各 `type-*.md`。
-- dsh-genui:当前 0.8.3,`src/client/spec.ts`、`blocks/render-node.tsx`、`guard.ts`。
+- dsh-genui:当前实现位于 `src/client/spec.ts`、`blocks/render-node.tsx` 与 `src/client/genui-runtime/`。
 - 移植基线:本仓库 fork,分支 `feat/diagram-component`。

@@ -10,6 +10,7 @@
  * 在本包的渲染/交互路径上（GenuiBlock/TemplateDrawer/GenuiPanel）。
  */
 import type { GenuiSpec, GenuiNode } from './spec.ts'
+import { visitGenuiNodes } from './genui-runtime/index.ts'
 
 /** 累积使用计数（成就的输入）。 */
 export interface AchieveState {
@@ -59,26 +60,14 @@ export const ACHIEVEMENTS: readonly AchievementDef[] = [
   { id: 'template-1', name: '模板学员', description: '从模板中心试用了一个模板。', rarity: 'common', check: s => s.templates >= 1 },
 ]
 
-/** 统计一个 spec 里出现的相关节点类别（与 guard 同口径遍历）。 */
+/** 使用 runtime registry 统计一个 spec 里出现的相关节点类别。 */
 export function countSpecKinds(spec: GenuiSpec): { charts: number, advanced: number } {
   let charts = 0
   let advanced = 0
-  const walk = (list: unknown): void => {
-    if (!Array.isArray(list)) return
-    for (const item of list) {
-      if (typeof item !== 'object' || item === null) continue
-      const v = item as Record<string, unknown>
-      const type = v.type
-      if (type === 'chart' || type === 'plot' || type === 'echart') charts += 1
-      if (type === 'scene3d' || type === 'mermaid' || type === 'diagram') advanced += 1
-      // 容器与列表项递归
-      if (Array.isArray(v.items)) walk(v.items as unknown[])
-      if (Array.isArray((v as { tabs?: unknown }).tabs)) {
-        for (const tab of (v as { tabs: Array<{ items?: unknown }> }).tabs) walk(tab.items)
-      }
-    }
-  }
-  walk(spec.items)
+  visitGenuiNodes(spec, ({ node }) => {
+    if (node.type === 'chart' || node.type === 'plot' || node.type === 'echart') charts += 1
+    if (node.type === 'scene3d' || node.type === 'mermaid' || node.type === 'diagram') advanced += 1
+  })
   return { charts, advanced }
 }
 

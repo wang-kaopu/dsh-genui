@@ -3,13 +3,13 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { GenuiActionContext } from '../src/client/action-context.ts'
 import { GenuiBlock } from '../src/client/GenuiBlock.tsx'
-import { repairGenuiSpec } from '../src/client/guard.ts'
+import { canonicalSpec } from './genui-runtime-helpers.ts'
 
 afterEach(cleanup)
 
 describe('file-tree collapse identity', () => {
   it('keeps directories at the same depth/index under different parents independent', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [{
         type: 'file-tree',
         items: [

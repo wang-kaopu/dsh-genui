@@ -12,7 +12,8 @@ import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import { hasFenceRegistry } from './setup'
 import { GenuiActionContext } from '../src/client/action-context.ts'
 import { GENUI_ACTION_DEBOUNCE_MS } from '../src/client/GenuiBlock.tsx'
-import { repairGenuiSpec, validateGenuiSpec } from '../src/client/guard.ts'
+import { processGenuiSpec } from '../src/client/genui-runtime/index.ts'
+import { canonicalSpec, isValidSpec } from './genui-runtime-helpers.ts'
 
 afterEach(() => {
   cleanup()
@@ -214,7 +215,7 @@ describe.skipIf(!hasFenceRegistry)('v2.5: submit 交卷 aggregation', () => {
 
 describe.skipIf(!hasFenceRegistry)('v2.5: guard coverage', () => {
   it('repair keeps action on quiz/textarea, group on radio, and the submit node', () => {
-    const spec = repairGenuiSpec({
+    const spec = canonicalSpec({
       items: [
         { type: 'quiz', question: 'q', action: 'a', options: [{ label: 'x', correct: true }] },
         { type: 'textarea', label: 't', action: 'b' },
@@ -232,7 +233,7 @@ describe.skipIf(!hasFenceRegistry)('v2.5: guard coverage', () => {
   })
 
   it('repair keeps a submit without action (local grading) and drops one without label', () => {
-    const spec = repairGenuiSpec({ items: [
+    const spec = canonicalSpec({ items: [
       { type: 'submit', groups: ['g1'] }, // no label → dropped
       { type: 'submit', label: '交卷' }, // no action → KEPT (local grading needs no round trip)
       { type: 'submit', label: '交卷', action: 'ok' },
@@ -244,14 +245,15 @@ describe.skipIf(!hasFenceRegistry)('v2.5: guard coverage', () => {
   })
 
   it('validate requires submit label but treats action as optional', () => {
-    const bad = validateGenuiSpec({ items: [{ type: 'submit' }] })
-    expect(bad.ok).toBe(false)
-    expect(bad.errors.join('\n')).toContain("type 'submit' requires label")
+    const bad = processGenuiSpec({ items: [{ type: 'submit' }] })
+    expect(bad.errors).toContainEqual(expect.objectContaining({
+      code: 'FIELD_REQUIRED',
+      path: 'items[0].label',
+      field: 'label',
+    }))
     // A label-only submit is valid: when questions carry `answer` data the
     // click grades locally with zero round trip — no action needed.
-    const good = validateGenuiSpec({ items: [{ type: 'submit', label: '交卷' }] })
-    expect(good.ok).toBe(true)
-    const withAction = validateGenuiSpec({ items: [{ type: 'submit', label: '交卷', action: 'grade' }] })
-    expect(withAction.ok).toBe(true)
+    expect(isValidSpec({ items: [{ type: 'submit', label: '交卷' }] })).toBe(true)
+    expect(isValidSpec({ items: [{ type: 'submit', label: '交卷', action: 'grade' }] })).toBe(true)
   })
 })

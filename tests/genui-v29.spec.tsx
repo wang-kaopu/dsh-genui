@@ -10,7 +10,7 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GenuiActionContext } from '../src/client/action-context.ts'
 import { GenuiBlock, GENUI_ACTION_DEBOUNCE_MS } from '../src/client/GenuiBlock.tsx'
-import { repairGenuiSpec } from '../src/client/guard.ts'
+import { canonicalSpec } from './genui-runtime-helpers.ts'
 
 afterEach(() => {
   cleanup()
@@ -24,7 +24,7 @@ beforeEach(() => {
 function renderBlock(spec: unknown, actions: Array<[string, Record<string, unknown>]> = []) {
   return render(
     <GenuiActionContext.Provider value={(a, p) => actions.push([a, p])}>
-      <GenuiBlock spec={repairGenuiSpec(spec)!} />
+      <GenuiBlock spec={canonicalSpec(spec)!} />
     </GenuiActionContext.Provider>,
   )
 }

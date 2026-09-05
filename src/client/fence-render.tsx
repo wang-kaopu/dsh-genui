@@ -18,7 +18,7 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSPropert
 import { CodeBlock } from '@deepseek-ai/dsh-client-ui-primitives'
 import { ErrorBoundary } from './ErrorBoundary.tsx'
 import { GenuiBlock } from './GenuiBlock.tsx'
-import { isRenderableProcess, processGenuiSpec } from './guard.ts'
+import { formatChartDiagnostics, formatDiagnostics, isRenderableGenuiResult, processGenuiSpec } from './genui-runtime/index.ts'
 import { fenceStateKey } from './interaction-store.ts'
 import { parsePartialGenuiSpec } from './parse-partial.ts'
 import { applyPanelOperation, diagnosePanelBudget, type PanelOperationStatus } from './panel-store.ts'
@@ -53,21 +53,15 @@ const FENCE_ERROR_STYLE: CSSProperties = {
   whiteSpace: 'pre-wrap',
 }
 
-/** Format chart-specific process errors without maintaining a second validator. */
-function formatChartProcessErrors(errors: string[]): string | null {
-  const chartErrors = errors.filter(error => /(?:variant is unsupported|kind must be bars, line, or donut|requires data or series|(?:data|series) is required for|(?:\.data|\.series)(?:\[\d+\])?(?:\.(?:data|label|value|color))? must|series is only supported for bars)/.test(error))
-  return chartErrors.length === 0 ? null : chartErrors.join('；')
-}
-
 /** Return a semantic/schema diagnostic for parseable raw fence content. */
 function processSemanticFailure(raw: string): string | null {
   const parsed = parsePartialGenuiSpec(raw)
   if (parsed === null) return null
   const processed = processGenuiSpec(parsed)
-  if (isRenderableProcess(processed)) return null
-  const chartErrors = formatChartProcessErrors(processed.errors)
+  if (isRenderableGenuiResult(processed)) return null
+  const chartErrors = formatChartDiagnostics(processed.errors)
   return chartErrors === null
-    ? `GenUI 字段验证失败：${processed.errors.join('；')}`
+    ? `GenUI 字段验证失败：${formatDiagnostics(processed.errors)}`
     : `chart 字段验证失败：${chartErrors}`
 }
 
@@ -142,7 +136,7 @@ function FencePanelPublisher({ sessionId, sourceId, order, spec }: {
 /** Process one parsed value and return its canonical repaired spec only when the shared pipeline is error-free. */
 function repairRenderableSpec(value: unknown): GenuiSpec | null {
   const processed = processGenuiSpec(value)
-  if (!isRenderableProcess(processed)) return null
+  if (!isRenderableGenuiResult(processed)) return null
   return processed.spec
 }
 
