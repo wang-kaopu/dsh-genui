@@ -1,0 +1,101 @@
+name: Temporary GenUI schema extraction
+
+on:
+  push:
+    branches:
+      - automation/genui-runtime-schema-extract
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: automation/genui-runtime-schema-extract
+          fetch-depth: 0
+
+      - name: Split component-schema into runtime modules
+        shell: python
+        run: |
+          from pathlib import Path
+
+          source_path = Path('src/client/component-schema.ts')
+          text = source_path.read_text()
+
+          diagnostic_start = text.index('export interface GenuiDiagnostic {')
+          diagnostic_end_marker = "\n}\n\n/** Canonical enum domains shared by schema validation and repair. */"
+          diagnostic_end = text.index(diagnostic_end_marker, diagnostic_start) + 3
+          diagnostic_type = text[diagnostic_start:diagnostic_end]
+
+          record_start = text.index('function record(value: unknown): Record<string, unknown> | undefined {')
+          normalize_start = text.index('function normalizeAliasFields(')
+          diagnostics_start = text.index('function visitNativeNodes(')
+
+          common_helpers = text[record_start:normalize_start]
+          normalize_body = text[normalize_start:diagnostics_start]
+          diagnostics_body = text[diagnostics_start:]
+
+          schema_text = text[:record_start]
+          schema_text = schema_text[:diagnostic_start] + schema_text[diagnostic_end:]
+          schema_text = schema_text.rstrip() + '\n'
+
+          runtime = Path('src/client/genui-runtime')
+          runtime.mkdir(parents=True, exist_ok=True)
+          (runtime / 'schema.ts').write_text(schema_text)
+          (runtime / 'normalize.ts').write_text(
+              '/** Deterministic GenUI alias and structural normalization. */\n'
+              "import { COMPONENT_SCHEMAS } from './schema.ts'\n"
+              "import type { GenuiDiagnostic } from './diagnostics.ts'\n\n"
+              + common_helpers
+              + normalize_body.rstrip()
+              + '\n'
+          )
+          (runtime / 'diagnostics.ts').write_text(
+              '/** GenUI runtime diagnostics for aliases and unknown fields. */\n'
+              "import { COMPONENT_SCHEMAS, GENUI_SPEC_SCHEMA } from './schema.ts'\n"
+              "import type { ComponentRecordSchema, ComponentSchema } from './schema.ts'\n\n"
+              + diagnostic_type
+              + '\n\n'
+              + common_helpers
+              + diagnostics_body.rstrip()
+              + '\n'
+          )
+
+          guard_path = Path('src/client/guard.ts')
+          guard = guard_path.read_text()
+          old_imports = """import {\n  BADGE_TONES, BUTTON_TONES, CALLOUT_TONES, CHART_KINDS, COMPONENT_SCHEMAS, DIAGRAM_EDGE_KINDS,\n  DIAGRAM_KINDS, DIAGRAM_NODE_TYPES, DIAGRAM_ROUTES, DIAGRAM_VARIANTS, ECHART_PRESETS, FILE_TYPES,\n  GENUI_NATIVE_TYPES, GENUI_SPEC_SCHEMA, INPUT_TYPES, MEDIA_ASPECT_RATIOS, MESH_SHAPES, PLOT_KINDS,\n  TEXT_SIZES, diagnoseUnknownGenuiFields, normalizeGenuiSpec,\n} from './component-schema.ts'\nimport type { ComponentFieldKind, ComponentRecordSchema, ComponentSchema, GenuiDiagnostic } from './component-schema.ts'\n"""
+          new_imports = """import {\n  BADGE_TONES, BUTTON_TONES, CALLOUT_TONES, CHART_KINDS, COMPONENT_SCHEMAS, DIAGRAM_EDGE_KINDS,\n  DIAGRAM_KINDS, DIAGRAM_NODE_TYPES, DIAGRAM_ROUTES, DIAGRAM_VARIANTS, ECHART_PRESETS, FILE_TYPES,\n  GENUI_NATIVE_TYPES, GENUI_SPEC_SCHEMA, INPUT_TYPES, MEDIA_ASPECT_RATIOS, MESH_SHAPES, PLOT_KINDS,\n  TEXT_SIZES,\n} from './genui-runtime/schema.ts'\nimport type { ComponentFieldKind, ComponentRecordSchema, ComponentSchema } from './genui-runtime/schema.ts'\nimport { normalizeGenuiSpec } from './genui-runtime/normalize.ts'\nimport { diagnoseUnknownGenuiFields } from './genui-runtime/diagnostics.ts'\nimport type { GenuiDiagnostic } from './genui-runtime/diagnostics.ts'\n"""
+          if old_imports not in guard:
+              raise SystemExit('guard import block did not match expected source')
+          guard = guard.replace(old_imports, new_imports, 1)
+
+          old_exports = """export { COMPONENT_SCHEMAS, GENUI_NATIVE_TYPES, diagnoseUnknownGenuiFields, normalizeGenuiSpec } from './component-schema.ts'\nexport type { ComponentFieldKind, ComponentSchema, GenuiDiagnostic } from './component-schema.ts'\n"""
+          new_exports = """export { COMPONENT_SCHEMAS, GENUI_NATIVE_TYPES } from './genui-runtime/schema.ts'\nexport { normalizeGenuiSpec } from './genui-runtime/normalize.ts'\nexport { diagnoseUnknownGenuiFields } from './genui-runtime/diagnostics.ts'\nexport type { ComponentFieldKind, ComponentSchema } from './genui-runtime/schema.ts'\nexport type { GenuiDiagnostic } from './genui-runtime/diagnostics.ts'\n"""
+          if old_exports not in guard:
+              raise SystemExit('guard export block did not match expected source')
+          guard = guard.replace(old_exports, new_exports, 1)
+          guard_path.write_text(guard)
+
+          source_path.unlink()
+          Path('.github/workflows/tmp-extract-genui-schema.yml').unlink()
+
+      - name: Verify extraction
+        run: |
+          test ! -e src/client/component-schema.ts
+          test -f src/client/genui-runtime/schema.ts
+          test -f src/client/genui-runtime/normalize.ts
+          test -f src/client/genui-runtime/diagnostics.ts
+          ! git grep -n "component-schema.ts" -- ':!docs/**'
+          git diff --check
+
+      - name: Commit extracted modules
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "refactor: 拆分 GenUI schema 职责"
+          git push origin HEAD:automation/genui-runtime-schema-extract
