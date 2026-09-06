@@ -33,12 +33,6 @@ import type { GenuiDiagnostic } from './genui-runtime/diagnostics.ts'
 import { GENUI_LIMITS } from './genui-runtime/limits.ts'
 import { color, enu, int, num, obj, opt, safeHref, safeMediaSrc, str } from './genui-runtime/value-utils.ts'
 
-export { COMPONENT_SCHEMAS, GENUI_NATIVE_TYPES } from './genui-runtime/schema.ts'
-export { normalizeGenuiSpec } from './genui-runtime/normalize.ts'
-export { diagnoseUnknownGenuiFields } from './genui-runtime/diagnostics.ts'
-export type { ComponentFieldKind, ComponentSchema } from './genui-runtime/schema.ts'
-export type { GenuiDiagnostic } from './genui-runtime/diagnostics.ts'
-
 /** Result of `validateGenuiSpec`. */
 export interface GenuiValidation {
   ok: boolean
