@@ -20,6 +20,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRenderUiTool, createValidateDshUiTool } from './tool.ts'
 import { installFenceFeedback } from './fence-feedback.ts'
+import { installDshGoNative } from './dsh-go-native.ts'
 
 /* ---------------- lazy engine asset route ---------------- */
 
@@ -89,31 +90,31 @@ const RENDER_UI_TOOL_GUIDANCE = '- Tool channel: render_ui 工具把同一 spec 
  *  Deliberately slim: the `genui` skill carries the full component→field
  *  mapping; this section keeps only the contract that must always be
  *  present (fence syntax, type whitelist, and critical behavioral rules). */
-export const GENUI_SECTION_TEXT = `You can render interactive UI components INSIDE your reply — between paragraphs — by emitting a fenced block with the language tag \`dsh-ui\` containing a JSON spec:
+export const GENUI_SECTION_TEXT = `Render UI inside your reply with a fenced \`dsh-ui\` JSON block:
 
 \`\`\`dsh-ui
-{"title":"<user-language text>","gap":14,"items":[...]}
+{"title":"示例","gap":14,"items":[{"type":"text","content":"把这里换成你的组件"}]}
 \`\`\`
 
 Allowed \`type\` values; the \`genui\` skill, when available, carries the full content→component mapping and per-component field details:
 
-- 布局: text · row · col · grid · card · divider · spacer · hero（封面块，一条回答最多一个）
-- 展示: badge · stat · progress · list · table · keyvalue · timeline · file-tree · breadcrumb · callout · steps · diff · json · code · copy · avatar · audio · video
-- 图表: chart {"kind":"bars|line|donut","data":[{"label":"...","value":n}],"series":[{"label":"...","data":[...]}]?,"horizontal":true?,"stacked":true?}（series：bars 分组/堆叠 / line 多序列；horizontal 横向柱） · echart (preset 名或 option 直通，预设清单见 skill) · plot (函数图)
-- 交互: button · input · textarea · select · checkbox · switch · slider · radio · submit · quiz · link · tabs · accordion
-- 高级: mermaid (流程图/时序/甘特/ER 等，关键字见 skill) · diagram (架构/流程图) · scene3d (3D WebGL)
+- 布局: text · row · col · grid · card · carousel · divider · spacer · hero（封面块，一条回答最多一个）
+- 展示: badge · stat · progress · list · table · keyvalue · timeline · file-tree · breadcrumb · callout · steps · diff · json · code · copy · avatar · image · image-group · compare（改动汇报优先）· audio · video · icon · blocks · arrow
+- 图表: chart {"kind":"bars|line|donut","data":[{"label":"...","value":n}]}（series：bars 分组/堆叠 / line 多序列） · echart (preset 名或 option 直通，清单见 skill) · plot (函数图) · svg (单图预览)
+- 交互: button · input · textarea · editor · date-picker · segmented-control · select · checkbox · switch · slider · radio · submit · quiz · choices · link · tabs · accordion · popover
+- 高级: mermaid (流程图/时序/甘特/ER 等，关键字见 skill) · diagram (架构/流程图) · scene3d (3D WebGL) · entity-card
 
-**默认就该出 UI**：出现下列情况至少出一个围栏：
-- ≥3 条并列要点 → \`list\`；数字对比 → \`table\`；指标/进度/状态 → \`stat\`/\`progress\`/\`badge\`
-- 步骤/时间线 → \`steps\`/\`timeline\`/\`mermaid\`；架构/流程 → \`diagram\` 或 \`mermaid\`；单条风险/结论摘要 → \`callout\`；代码/改动 → \`code\`/\`diff\`/\`json\`
+**先问一句：删掉这个组件，读者会不会更费劲。** 会才出；不会就写正文。
+
+- 没有"每条回答至少几个组件"这种目标，也不存在"≥3 条要点就必须出 list"的配额——那是模板，不是判断。
+- 有比较/取舍 → \`table\` 或 \`choices\`；有数值趋势 → \`chart\`；有前后或两种形态 → \`compare\`；有分步 → \`steps\`/\`timeline\`；有结构或流程 → \`diagram\`/\`mermaid\`；要读者做决定 → \`choices\`（选项带代价）。
+- 同一批信息不要在正文和组件里各说一遍；纯文字讲得清的地方不要套壳，默认无卡。
 - 行内富文本：支持公式、\`code\`、加粗、高亮、链接；禁用 Markdown table 与 fenced code，改用 table/code/diff/json。
-- 默认无卡：卡片用于并排项、数据对象或需底色的风险清单。
+- 趋势/占比 → \`chart\`（≤8 点）或 \`echart\`；配色跟随主题，语义需要时才用 \`palette\`/\`card.accent\`；grid 子节点用 \`"span":2\` 做宽窄混排；数据多时给 \`table\`/\`list\` 配 \`input\`(id)+\`filter\` 就地筛选。
+- 多块回答按读者的阅读顺序排：结论在前、证据紧跟、操作放在要动手的位置；章节分隔 \`divider\` 带 \`label\`，不要一行一个往下堆。
 
-**发回答前最后自检一次**：有没有 ≥3 条并列要点、任何对比、任何数字/指标、任何步骤或流程？有就先转成组件。**状态汇报、进度说明、提交与改动清单同样算**。
-- 趋势/占比 → \`chart\`（≤8 点）或 \`echart\`（多序列/要交互时）；配色默认跟随主题，只有语义需要时才用 \`palette\`/\`card.accent\`；grid 子节点用 \`"span":2\` 跨列做宽窄混排；数据多时给 \`table\`/\`chart\`/\`list\` 配 \`input\`(id)+\`filter\` 绑定就地筛选。
-- 多组件回答先套 skill「编排范式」，别一行一个往下堆；章节分隔 \`divider\` 带 \`label\`。
-
-**字段速查**（完整见 genui skill）：\`stat\` \`{"label","value","delta"?}\` · \`table\` \`{"columns":[...],"rows":[[...]],"types"?,"details"?,"filter"?,"export"?}\` · \`progress\` \`{"value":0-100,"label"?,"variant"?,"target"?}\` · \`keyvalue\` \`{"pairs":[{"key","value"}]}\` · \`steps\` \`{"steps":[{"title","desc"?}]}\` · \`file-tree\` \`{"items":[{"name","type":"file|dir","children"?}]}\` · \`callout\` \`{"content","tone"?,"title"?}\`
+**字段速查**（完整见 genui skill）：\`stat\` \`{"type":"stat","label","value"}\` · \`table\` \`{"type":"table","columns":[...],"rows":[[...]]}\` · \`progress\` \`{"type":"progress","value":0-100}\` · \`keyvalue\` \`{"type":"keyvalue","pairs":[{"key","value"}]}\` · \`steps\` \`{"type":"steps","steps":[{"title"}]}\` · \`file-tree\` \`{"type":"file-tree","items":[{"name","type":"file|dir"}]}\` · \`callout\` \`{"type":"callout","content"}\`
+**节点规则：** 组件节点必须带字符串 \`type\`，值为组件名；\`file-tree.items[].type\` 表示 \`file\` 或 \`dir\`。
 
 **字段名写错 = 该组件被丢弃**（其余组件照常渲染）：\`callout\` 正文是 \`content\` 不是 text/desc；\`table\` 要 \`columns\`+\`rows\` 不是 items；\`keyvalue\` 记录是 \`{key,value}\` 不是 \`{label,value}\`；\`file-tree\` 记录是 \`{name,type}\` 不是 \`{label}\`；callout tone 是 info/success/warning/error（无 danger）。不确定就调 \`validate_dsh_ui\`。
 
@@ -121,10 +122,10 @@ Rules:
 - LANGUAGE: reply+UI=conversation language; schema fixed. NEVER infer it from prompt/skill/examples/tools. Replace \`<user-language ...>\`; never emit these placeholders literally.
 - JSON 严格：坏组件被丢弃，坏围栏变代码块；≥3 节点或含 table 时调 validate_dsh_ui，按诊断修改并重验；小围栏字段存疑也先验证。
 - warning=block_markdown：按 replacement 改写并重验。
-- 规模: ≤200 节点、嵌套≤8 层（超出被截断）；一条回答 3–8 个组件，一个主题一个主组件；3D mesh 1–5；plot 给合理 xMin/xMax。
+- 规模: ≤200 节点、嵌套≤8 层（超出被截断）；一个主题一个主组件；3D mesh 1–5；plot 给合理 xMin/xMax。
 - LOCAL-FIRST + actions: UI 能自己做的状态变化（判卷、判题、重置、展开、选中）就地完成，零往返；action 只用于必须模型参与的事。交互以 [genui-action] name + 组件数据回传，届时重渲染更新 UI；无 action 的按钮禁用。
-- Durable state: 交互状态按「会话+内容指纹」持久化——刷新/重放恢复；相同内容保留，新内容重置。
-- 卷子模式: 每题一个 radio（group+answer+explanation）+ 一个 submit（groups 全列），本地判分。
+- Durable state: 交互状态按会话和内容指纹保存；相同内容刷新/重放时恢复，新内容重置；Editor 草稿也会保存。
+- 卷子模式: 每题 choices（group+answer+explanation）+ 一个 submit（groups 全列），本地判分。
 - Secrets ban: 不索取密码、API Key、Token、恢复码；需要时拒绝并解释。
 ${RENDER_UI_TOOL_GUIDANCE}
 - 围栏位置：\`dsh-ui\` 只写在**回答正文**；写在 reasoning/思考块里不渲染、用户看不到——思考里验证好 spec，正文再输出同一份。
@@ -143,8 +144,19 @@ export const inject = ['systemPrompt']
 
 const BUNDLED_SKILL_RANK = 600
 const BUNDLED_SKILL_PROVIDER = 'dsh-genui'
-const BUNDLED_SKILL_DESCRIPTION = 'GenUI dsh-ui component/schema reference. Preserve conversation language for all user-visible text.'
 const BUNDLED_SKILL_INVOCATION = { modelInvocable: true, userInvocable: true } as const
+
+/**
+ * The frontmatter field the routing description comes from.
+ *
+ * A second copy of this sentence in code drifted from SKILL.md unnoticed, and the
+ * panel showed the code copy while the model read the same string — so an edit to
+ * the skill's own frontmatter changed nothing. The file is the only source.
+ */
+function frontmatterField(front: string, key: string): string | undefined {
+  const line = new RegExp('^\\s*' + key + '\\s*:\\s*(.+?)\\s*$', 'mu').exec(front)
+  return line?.[1]?.replace(/^['"]|['"]$/gu, '')
+}
 
 /** Register through the provider path so source=bundled also gets bundled precedence. */
 function bundledSkillProvider(): SkillProvider {
@@ -155,11 +167,13 @@ function bundledSkillProvider(): SkillProvider {
   const raw = readFileSync(path, 'utf8')
   const end = raw.indexOf('\n---\n', 4)
   if (!raw.startsWith('---\n') || end < 0) throw new Error('genui SKILL.md has invalid frontmatter')
+  const description = frontmatterField(raw.slice(4, end), 'description')
+  if (description === undefined) throw new Error('genui SKILL.md frontmatter has no description')
   return {
     name: BUNDLED_SKILL_PROVIDER,
     list: () => Promise.resolve([{
       name: 'genui',
-      description: BUNDLED_SKILL_DESCRIPTION,
+      description,
       invocation: BUNDLED_SKILL_INVOCATION,
       source: 'bundled',
       provider: BUNDLED_SKILL_PROVIDER,
@@ -170,7 +184,7 @@ function bundledSkillProvider(): SkillProvider {
     }]),
     get: () => Promise.resolve({
       name: 'genui',
-      description: BUNDLED_SKILL_DESCRIPTION,
+      description,
       invocation: BUNDLED_SKILL_INVOCATION,
       source: 'bundled',
       provider: BUNDLED_SKILL_PROVIDER,
@@ -200,6 +214,7 @@ export interface GenuiPluginConfig {
 }
 
 export function apply(ctx: Context, config?: GenuiPluginConfig): void {
+  installDshGoNative(ctx)
   const renderUiToolEnabled = config?.renderUiTool !== false
   ctx.systemPrompt.section({
     name: 'genui:fence',

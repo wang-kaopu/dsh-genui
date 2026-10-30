@@ -59,8 +59,10 @@ import type { ChatNode, ChatSnapshot } from '@deepseek-ai/dsh-client-ui-chat/cli
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { GenuiActionContext, type GenuiActionHandler } from './action-context.ts'
 import { withFileLinkContext, type FileLinkAvailability, type FileLinkCordisContext } from './file-link-context.tsx'
-import css from './GenuiBlock.module.css'
 import { renderSvgFence } from './svg-fence.tsx'
+import { inferSkeleton } from './streaming-shape.ts'
+import { flushSync } from 'react-dom'
+import { GenuiSkeleton } from './blocks/skeleton.tsx'
 import { repairFenceJson, trimToBalancedRoot } from '../shared/fence-repair.ts'
 import { describeFenceFailure, FenceDiagnostic, renderResolvedFenceNode, type GenuiFenceContext } from './fence-render.tsx'
 import { resolveViewedSessionId } from './session-resolver.ts'
@@ -68,13 +70,14 @@ import { validateCanonicalGenuiSpec } from './guard.ts'
 import { diagnoseUnknownGenuiFields } from './genui-runtime/diagnostics.ts'
 import { normalizeGenuiSpec } from './genui-runtime/normalize.ts'
 import { sourceFencesOfAssistant, sourceLanguageAt } from './source-fence.ts'
+import { normalizeFenceLanguage } from '../shared/fence-language.ts'
 
 /** 优先用宿主代码块内容的语义标记定位包装节点；隐藏语言或改变类名不能阻断
  * 原始消息的围栏识别。类名也用于仍以这些表面呈现的代码块。 */
 const CODE_BLOCK_SELECTORS = '.md-code-block, .code-block, .code-block-small'
 
 /** 在同一处收集代码块包装节点，供候选扫描和原始围栏序号共用。 */
-function codeBlockSurfaces(scope: ParentNode): HTMLElement[] {
+export function codeBlockSurfaces(scope: ParentNode): HTMLElement[] {
   const surfaces = new Set(scope.querySelectorAll<HTMLElement>(CODE_BLOCK_SELECTORS))
   for (const content of scope.querySelectorAll<HTMLElement>('[data-code-block-content]')) {
     if (content.parentElement !== null) surfaces.add(content.parentElement)
@@ -110,16 +113,106 @@ const PROCESSED = 'data-genui-rendered'
 /** The settled marker on AssistantMarkdown (absent = settled). */
 const STREAMING = '[data-streaming]'
 /** Container class for the plugin-owned root. */
+function prefersReducedMotion(): boolean {
+return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+/** How long the skeleton leaves and the component arrives. Short enough to
+ *  read as one motion, long enough to be seen. */
+const SWAP_MS = 220
+
+/**
+ * Swap the skeleton for real content as ONE local motion.
+ *
+ * A document-level View Transition was tried first and was wrong: it snapshots
+ * the whole page, so everything around the block (the prose below it, in the
+ * reported case) cross-faded too and appeared twice mid-flight. The transition
+ * must be contained to the block that changed.
+ *
+ * So: keep the outgoing skeleton as an absolutely-positioned layer, render the
+ * new content underneath it, animate the container's height from the old to the
+ * new one, and cross-fade the layers. The reader sees one object resolving, and
+ * the layout below slides instead of jumping.
+ */
+export function swapWithTransition(container: HTMLElement, render: () => void): void {
+const outgoing = container.firstElementChild
+if (prefersReducedMotion() || outgoing === null || typeof outgoing.animate !== 'function') {
+  render()
+  return
+}
+const before = container.getBoundingClientRect().height
+const ghost = outgoing.cloneNode(true) as HTMLElement
+ghost.setAttribute('aria-hidden', 'true')
+ghost.style.position = 'absolute'
+ghost.style.inset = '0 0 auto 0'
+ghost.style.pointerEvents = 'none'
+ghost.style.zIndex = '1'
+container.style.position = 'relative'
+container.append(ghost)
+
+flushSync(render)
+
+const after = container.getBoundingClientRect().height
+const incoming = container.firstElementChild as HTMLElement | null
+const easing = 'cubic-bezier(0.22, 0.8, 0.24, 1)'
+
+if (Number.isFinite(before) && Number.isFinite(after) && Math.abs(after - before) > 1) {
+  // The height change is what the layout below notices; animate it explicitly
+  // instead of letting it snap a frame after the fade started.
+  container.style.height = `${before}px`
+  container.style.overflow = 'hidden'
+  void container.offsetHeight
+  container.style.transition = `height ${SWAP_MS}ms ${easing}`
+  container.style.height = `${after}px`
+}
+
+ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: SWAP_MS, easing: 'ease-out', fill: 'forwards' })
+incoming?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: SWAP_MS, easing: 'ease-out', fill: 'both' })
+
+const done = (): void => {
+  ghost.remove()
+  container.style.removeProperty('height')
+  container.style.removeProperty('overflow')
+  container.style.removeProperty('transition')
+  container.style.removeProperty('position')
+}
+if (typeof ghost.animate === 'function') {
+  Promise.all([
+    ghost.getAnimations().map(a => a.finished).reduce<Promise<unknown>>((all, p) => all.then(() => p), Promise.resolve()),
+  ]).then(done).catch(done)
+  setTimeout(done, SWAP_MS + 120)
+} else {
+  done()
+}
+}
+
+
 const CONTAINER_CLASS = 'genui-dom-fence'
 /** Container class for the visible diagnostic of an unrenderable fence. */
 const DIAGNOSTIC_CLASS = 'genui-dom-fence-diagnostic'
 /** Host containers a takeover never reaches: our own mounted trees. Every
  * discovery path shares these gates, so a changed node cannot enqueue what a
  * full scan rejects. */
-const SURFACE_EXCLUDES = `.${CONTAINER_CLASS}, .${DIAGNOSTIC_CLASS}, [data-genui-svg-fence]`
+const SURFACE_EXCLUDES = `.${CONTAINER_CLASS}, .${DIAGNOSTIC_CLASS}, [data-genui-svg-fence], [data-genui-surface], [data-genui-sidechat-root]`
 /** Same for tag-text spans: the host renders these rows outside the
  * transcript (reasoning, tool output, sidebars, plugin panels). */
-const TAG_TEXT_EXCLUDES = `.${CONTAINER_CLASS}, .${DIAGNOSTIC_CLASS}, [data-chat-group-part="reasoning"], [data-tool], [data-sidebar-chat], [data-sidebar-right-session], [data-sidebar-right-panel], [data-panel-conversation], [data-plugin-panel]`
+const TAG_TEXT_EXCLUDES = `.${CONTAINER_CLASS}, .${DIAGNOSTIC_CLASS}, [data-genui-surface], [data-genui-sidechat-root], [data-chat-group-part="reasoning"], [data-tool], [data-sidebar-chat], [data-sidebar-right-session], [data-sidebar-right-panel], [data-panel-conversation], [data-plugin-panel]`
+/**
+ * Subtrees whose mutations cannot change a fence.
+ *
+ * The observer has to watch the whole body (a history load or a session switch
+ * replaces the transcript wholesale), but the composer types into a subtree no
+ * fence can live in, and this plugin's own containers are React's to mutate.
+ * Without this gate every keystroke and every panel interaction ran
+ * `repairSurgery` and scheduled a sweep, which on a long transcript is a frame
+ * of work per key.
+ */
+const IGNORED_MUTATION_SCOPE = `${SURFACE_EXCLUDES}, [data-composer-seat], [data-composer-input]`
+/** Host attributes used by discovery, language lookup and fallback row order. */
+const FENCE_ATTRIBUTES = ['data-streaming', 'class', 'data-code-block-content', 'data-code-block-banner',
+  'data-chat-anchor-key', 'data-chat-flow-key', 'data-chat-flow-kind', 'data-chat-node-key',
+  'data-chat-group-part', 'data-tool', 'data-sidebar-chat', 'data-sidebar-right-session',
+  'data-sidebar-right-panel', 'data-panel-conversation', 'data-plugin-panel', 'data-genui-svg-fence', 'data-genui-surface']
 /** Slow sweep interval: the observer catches everything, this is the 1s
  * belt-and-braces pass (history loads, missed attribute batches). */
 const SWEEP_MS = 1000
@@ -193,20 +286,6 @@ function looksLikeGenuiInProgress(raw: string): boolean {
  *  the stock block without a mounted replacement" (issue #19) still holds: if
  *  the body never parses, the settle sweep unmounts the skeleton and the raw
  *  code block returns. */
-function GenuiSkeleton() {
-  return (
-    <div className={css.skeleton} role="status" aria-label="正在生成界面">
-      <span className={css.skeletonTitle} />
-      <span className={css.skeletonBars}>
-        <span style={{ width: '32%' }} />
-        <span style={{ width: '52%' }} />
-        <span style={{ width: '24%' }} />
-      </span>
-      <span className={css.skeletonBlock} />
-    </div>
-  )
-}
-
 interface Mount {
   root: Root
   container: HTMLElement
@@ -248,7 +327,7 @@ function infostringOf(block: Element): 'dsh-ui' | 'svg' | null {
   const pre = block.querySelector('pre')
   for (const el of block.querySelectorAll('*')) {
     if (el.childElementCount !== 0) continue
-    const lang = el.textContent?.trim()
+    const lang = normalizeFenceLanguage(el.textContent?.trim() ?? '')
     if (lang !== 'dsh-ui' && lang !== 'svg') continue
     if (pre !== null && pre.contains(el)) continue
     // A leaf label that belongs to a NESTED known code surface is that
@@ -288,13 +367,38 @@ const KNOWN_LANGUAGE_LABELS = new Set([
 /**
  * Read a language that the host still exposes in its CodeBlock banner.
  *
- * 只有标签命中 {@link KNOWN_LANGUAGE_LABELS} 才返回语言；空标签与本地化通用词
+ * 先规范化 GenUI 标签，再识别已知语言与明确的 `dsh-ui-*` 变体；空标签与本地化通用词
  * （«Код» / Código / 代码块 …）是宿主的**呈现文案**、不是语义，一律返回 null——
  * 此前它们会被当成真语言，连 ChatSnapshot 来源都被短路（issue #258）。
  */
 function domLanguageOf(block: Element): string | null {
-  const label = labelTextOf(block)
-  return label !== '' && KNOWN_LANGUAGE_LABELS.has(label.toLowerCase()) ? label : null
+  const label = normalizeFenceLanguage(labelTextOf(block))
+  // An explicit GenUI-like language that normalization did not accept is not
+  // a localized generic banner; never recover it from JSON-shaped content.
+  return label.toLowerCase().startsWith('dsh-ui') || KNOWN_LANGUAGE_LABELS.has(label.toLowerCase()) ? label : null
+}
+
+/**
+ * 解析一条宿主代码块的围栏语言，并吸收标签书写噪音。
+ *
+ * 宿主把 `dsh-ui` 写进快照时可能带上尾部标点（```dsh-ui> 这类手滑），mdast 会
+ * 原样保留在 `lang` 上。四处判定都要走同一个规范化，否则同一条围栏在「发现」
+ * 与「接管」两步得到相反结论，表现就是静默停在代码块上。
+ *
+ * `null`（围栏确实没有语言）与 `undefined`（来源不可用）必须保持区分：接管判定
+ * 只在后者才走内容识别兜底。
+ *
+ * @param block - 宿主代码块元素。
+ * @param sourceLanguage - 读取 ChatSnapshot 侧语言的回调（DOM 无语言时使用）。
+ * @returns 规范化后的语言、`null` 或 `undefined`。
+ */
+function resolveFenceLanguage(
+  block: Element,
+  sourceLanguage: (block: Element) => string | null | undefined,
+): string | null | undefined {
+  const domLanguage = tagTextBodyOf(block) !== null ? 'dsh-ui' : domLanguageOf(block)
+  const language = domLanguage ?? sourceLanguage(block)
+  return typeof language === 'string' ? normalizeFenceLanguage(language) : language
 }
 
 /** The banner label's raw text (empty while streaming — the host renders the
@@ -559,13 +663,13 @@ function rowOf(block: Element): Element {
 }
 
 /** Return a stable one-based ordinal among settled GenUI fences in this row. */
-function fenceIndexOf(ctx: Context, row: Element, block: Element, sourceLanguage: (block: Element) => string | null | undefined = candidate => sourceLanguageOf(ctx, candidate)): number {
-  if (!row.matches(ASSISTANT_FLOW_ROW) || row.getAttribute('data-chat-anchor-key') === null) {
-    const scope = row.getAttribute('data-chat-anchor-key') === null ? document : row
+function fenceIndexOf(row: Element, block: Element, sourceLanguage: (block: Element) => string | null | undefined, documentIndex: (block: Element) => number): number {
+  if (row.getAttribute('data-chat-anchor-key') === null) return documentIndex(block)
+  if (!row.matches(ASSISTANT_FLOW_ROW)) {
     let fallbackIndex = 0
-    for (const candidate of findFenceCandidates(scope)) {
+    for (const candidate of findFenceCandidates(row)) {
       if (candidate.closest(STREAMING) !== null) continue
-      const language = tagTextBodyOf(candidate) !== null ? 'dsh-ui' : domLanguageOf(candidate) ?? sourceLanguage(candidate)
+      const language = resolveFenceLanguage(candidate, sourceLanguage)
       if (language !== 'dsh-ui' && !(language === undefined && isGenericGenuiFence(candidate, rawOf(candidate)))) continue
       fallbackIndex += 1
       if (candidate === block) return fallbackIndex
@@ -577,7 +681,7 @@ function fenceIndexOf(ctx: Context, row: Element, block: Element, sourceLanguage
     if (candidate.closest(STREAMING) !== null) continue
     if (candidate.closest(ASSISTANT_FLOW_ROW) !== row) continue
     if (candidate.closest('[data-chat-group-part="reasoning"]') !== null) continue
-    const language = tagTextBodyOf(candidate) !== null ? 'dsh-ui' : domLanguageOf(candidate) ?? sourceLanguage(candidate)
+    const language = resolveFenceLanguage(candidate, sourceLanguage)
     if (language !== 'dsh-ui' && !(language === undefined && isGenericGenuiFence(candidate, rawOf(candidate)))) continue
     index += 1
     if (candidate === block) return index
@@ -590,7 +694,7 @@ function hostFenceBlocksOf(row: Element): HTMLElement[] {
   return codeBlockSurfaces(row).filter(candidate => {
     if (closestCodeBlockSurface(candidate.parentElement) !== null) return false
     if (candidate.closest(`.${CONTAINER_CLASS}, .${DIAGNOSTIC_CLASS}, [data-genui], [data-genui-svg-fence]`) !== null) return false
-    if (candidate.closest('[data-chat-group-part="reasoning"], [data-tool], [data-sidebar-chat], [data-sidebar-right-session], [data-sidebar-right-panel], [data-panel-conversation], [data-plugin-panel]') !== null) return false
+    if (candidate.closest('[data-genui-sidechat-root], [data-chat-group-part="reasoning"], [data-tool], [data-sidebar-chat], [data-sidebar-right-session], [data-sidebar-right-panel], [data-panel-conversation], [data-plugin-panel]') !== null) return false
     if (candidate.closest(ASSISTANT_FLOW_ROW) !== row) return false
     return isPlausibleFenceSurface(candidate) && candidate.querySelector('pre') !== null
   })
@@ -766,7 +870,7 @@ function chatSourceOf(ctx: Context, sessionId: SessionId): { getSnapshot: () => 
  * document-order index among chat rows — monotonic within the current
  * render window, degraded across reloads.
  */
-function anchorSeqOf(row: Element): number {
+function anchorSeqOf(row: Element, documentRowIndex: (row: Element) => number): number {
   const key = row.getAttribute('data-chat-anchor-key') ?? ''
   const turnStep = /assistant-step(\d+):(\d+)$/.exec(key)
   if (turnStep !== null) {
@@ -774,11 +878,7 @@ function anchorSeqOf(row: Element): number {
     const step = Number(turnStep[2])
     if (Number.isFinite(turn) && Number.isFinite(step)) return turn * 1000 + step
   }
-  const rows = document.querySelectorAll(`[data-chat-anchor-key], ${FLOW_ROW}`)
-  for (let i = 0; i < rows.length; i += 1) {
-    if (rows[i] === row) return i
-  }
-  return 0
+  return documentRowIndex(row)
 }
 
 /**
@@ -802,11 +902,122 @@ export function installDomFenceRenderer(
   // visible diagnostic explains why (issue #158). Kept apart from `mounts`
   // because a diagnosed block is never hidden.
   const diagnostics = new Map<HTMLElement, { container: HTMLElement; root: Root; raw: string }>()
+  /** Reverse lookup for host surgery: a container wipe must not search every
+   * mounted root. Entries are replaced/deleted with their owning root. */
+  const containerBlocks = new WeakMap<Node, HTMLElement>()
+  /** Existing roots affected by this observer batch. Discovery has its own
+   * queue; a text change in one fence must not re-read the whole transcript. */
+  const dirtyMounts = new Set<HTMLElement>()
+  const dirtyDiagnostics = new Set<HTMLElement>()
+  let fullMaintenance = false
   let disposed = false
   let rafId: number | null = null
   let activeChatSession: SessionId | undefined
   let unsubscribeChat: (() => void) | undefined
   const sourceLanguages = createSourceLanguageResolver(ctx)
+  // The fallback identity uses document order. Keep topology separate from
+  // eligibility: a source update can change a language without adding DOM,
+  // and streaming body text must not rediscover every span in the transcript.
+  let documentFences: Map<Element, number> | undefined
+  let documentOrdinalsDirty = true
+  let settledFenceCount = 0
+  let documentRows: Map<Element, number> | undefined
+
+  function invalidateDocumentTopology(): void {
+    documentFences = undefined
+    documentOrdinalsDirty = true
+    documentRows = undefined
+  }
+
+  function documentFenceIndex(block: Element): number {
+    documentFences ??= new Map(findFenceCandidates().map(candidate => [candidate, 0]))
+    if (documentOrdinalsDirty) {
+      settledFenceCount = 0
+      for (const candidate of documentFences.keys()) {
+        const language = isSettled(candidate) ? resolveFenceLanguage(candidate, sourceLanguages.get) : null
+        const eligible = language === 'dsh-ui'
+          || (language === undefined && isGenericGenuiFence(candidate, rawOf(candidate)))
+        documentFences.set(candidate, eligible ? ++settledFenceCount : 0)
+      }
+      documentOrdinalsDirty = false
+    }
+    return documentFences.get(block) || settledFenceCount + 1
+  }
+
+  function documentRowIndex(row: Element): number {
+    documentRows ??= new Map(Array.from(document.querySelectorAll(`[data-chat-anchor-key], ${FLOW_ROW}`),
+      (element, index) => [element, index]))
+    return documentRows.get(row) ?? 0
+  }
+
+  /** Only host topology or eligibility changes invalidate fallback order.
+   * Plugin commits, syntax-highlighting spans and ordinary reader-word spans
+   * do not add host fences/rows. Unknown-class surfaces remain covered by pre. */
+  function invalidateDocumentMutation(record: MutationRecord): void {
+    if (documentFences === undefined && documentRows === undefined) return
+    const element = record.target instanceof Element ? record.target : record.target.parentElement
+    if (element === null) return
+    if (record.type === 'attributes') {
+      if (record.attributeName === 'data-streaming') documentOrdinalsDirty = true
+      else if (record.attributeName !== 'class' || documentFences?.has(element)
+        || element.matches(CODE_BLOCK_SELECTORS)
+        || (element.closest('pre') === null && element.querySelector('pre') !== null)) {
+        invalidateDocumentTopology()
+      }
+      return
+    }
+    if (record.type === 'childList') {
+      const topology = `${CODE_BLOCK_SELECTORS}, [data-code-block-content], pre, [data-chat-anchor-key], ${FLOW_ROW}`
+      for (const node of [...record.addedNodes, ...record.removedNodes]) {
+        if (!(node instanceof Element)) continue
+        // Removed nodes may already live under an excluded ancestor by the
+        // time this batch runs. Their old membership still invalidates order.
+        if (documentFences?.has(node) || [...node.querySelectorAll('pre, span')].some(child => {
+          for (let current: Element | null = child; current !== null && current !== node; current = current.parentElement) {
+            if (documentFences?.has(current)) return true
+          }
+          return false
+        })) {
+          invalidateDocumentTopology()
+          return
+        }
+        if (node.closest(IGNORED_MUTATION_SCOPE) !== null) continue
+        if (node.matches(topology) || node.querySelector(topology) !== null
+          || isTakeoverTagText(node) || [...node.querySelectorAll('span')].some(span => isTakeoverTagText(span))
+          || (node.closest('pre') === null && (normalizeFenceLanguage(node.textContent?.trim() ?? '') === 'dsh-ui'
+            || (node.childElementCount > 0 && infostringOf(node) === 'dsh-ui')))) {
+          invalidateDocumentTopology()
+          return
+        }
+      }
+    }
+    const pre = element.closest<HTMLElement>('pre')
+    if (pre !== null) {
+      const block = outermostSurfaceOf(pre) ?? surfaceOf(pre)
+      // Only the generic-language fallback derives eligibility from body text.
+      if (block !== null && resolveFenceLanguage(block, sourceLanguages.get) === undefined) documentOrdinalsDirty = true
+      return
+    }
+    if (element.tagName === 'SPAN') {
+      const known = documentFences?.has(element) === true
+      const eligible = isTakeoverTagText(element)
+      if (known !== eligible) invalidateDocumentTopology()
+      if (known || eligible) return
+    }
+    // An unknown-class surface was absent from the old candidate list until
+    // its leaf banner changed to dsh-ui. Cached ancestry alone cannot see it.
+    if (element.childElementCount === 0 && normalizeFenceLanguage(element.textContent?.trim() ?? '') === 'dsh-ui') {
+      invalidateDocumentTopology()
+      return
+    }
+    // A banner edit or a changed surface shape can change language/discovery.
+    for (let current: Element | null = element; current !== null; current = current.parentElement) {
+      if (documentFences?.has(current)) {
+        invalidateDocumentTopology()
+        return
+      }
+    }
+  }
   /** Nodes changed since the last sweep, awaiting discovery; the value says
    * whether the whole new subtree has to be scanned (structure or attribute
    * change) or only the code context around the node (text change). Discovery
@@ -860,6 +1071,8 @@ export function installDomFenceRenderer(
       unsubscribeChat?.()
       unsubscribeChat = undefined
       activeChatSession = sessionId
+      fullMaintenance = true
+      invalidateDocumentTopology()
     }
     if (sessionId !== undefined && unsubscribeChat === undefined) {
       unsubscribeChat = chatSourceOf(ctx, sessionId)?.subscribe(() => {
@@ -867,6 +1080,7 @@ export function installDomFenceRenderer(
         // on screen before its rows exist in the snapshot, and only the source
         // can name an unlabelled surface dsh-ui.
         sourceChanged = true
+        documentOrdinalsDirty = true
         schedule()
       })
     }
@@ -883,13 +1097,13 @@ export function installDomFenceRenderer(
       // per block so the degraded path is visible in the console.
       warnOnce(block, 'no [data-chat-anchor-key] ancestor for a dsh-ui fence (host render path without row anchor — e.g. Safari); using fallback identity dom:unknown:N')
     }
-    const fenceIndex = fenceIndexOf(ctx, row, block, sourceLanguages.get)
+    const fenceIndex = fenceIndexOf(row, block, sourceLanguages.get, documentFenceIndex)
     const anchorKey = row.getAttribute('data-chat-anchor-key') ?? 'unknown'
     const key = `dom:${anchorKey}:${fenceIndex}` as Key
     const sessionId = sessionIdForRender(preserveSessionIdentity)
     const context: GenuiFenceContext = {
       ...(sessionId === undefined ? {} : { sessionId }),
-      ...(settled ? { source: { id: key as string, order: [anchorSeqOf(row), 0, fenceIndex] as const } } : {}),
+      ...(settled ? { source: { id: key as string, order: [anchorSeqOf(row, documentRowIndex), 0, fenceIndex] as const } } : {}),
     }
     return { key, context }
   }
@@ -898,6 +1112,8 @@ export function installDomFenceRenderer(
     const mount = mounts.get(block)
     if (mount === undefined) return
     mounts.delete(block)
+    dirtyMounts.delete(block)
+    containerBlocks.delete(mount.container)
     mount.root.unmount()
     mount.container.remove()
     block.style.display = ''
@@ -910,6 +1126,8 @@ export function installDomFenceRenderer(
     const diagnostic = diagnostics.get(block)
     if (diagnostic === undefined) return
     diagnostics.delete(block)
+    dirtyDiagnostics.delete(block)
+    containerBlocks.delete(diagnostic.container)
     try {
       diagnostic.root.unmount()
     } catch {
@@ -960,6 +1178,7 @@ export function installDomFenceRenderer(
       return
     }
     diagnostics.set(block, { container, root, raw })
+    containerBlocks.set(container, block)
   }
 
   /**
@@ -1004,9 +1223,7 @@ export function installDomFenceRenderer(
     if (block.hasAttribute(PROCESSED)) return
     const row = rowOf(block)
     const settled = isSettled(block)
-    const domLanguage = tagTextBodyOf(block) !== null ? 'dsh-ui' : domLanguageOf(block)
-    const sourceLanguage = domLanguage === null ? sourceLanguages.get(block) : undefined
-    const language = domLanguage ?? sourceLanguage
+    const language = resolveFenceLanguage(block, candidate => sourceLanguages.get(candidate))
     const raw = rawOf(block)
     // DSH 可能在最终 DOM 隐去不支持高亮的语言；公开 ChatSnapshot 的原始 Markdown 是 language 来源。
     // 内容识别只在 source 暂不可用且 assistant 已结束时兜底，不覆盖已确认的 language 或无 language fence。
@@ -1033,9 +1250,14 @@ export function installDomFenceRenderer(
         }
         return
       }
-      // Streaming, spec-shaped, nothing renderable yet: show the skeleton
-      // rather than a wall of half-written JSON.
-      payload = <GenuiSkeleton />
+      // Streaming, spec-shaped, nothing renderable yet. If the first component
+      // type is already readable, show a placeholder shaped like it; otherwise
+      // show NOTHING and keep the stock code block: a shape we cannot infer is a
+      // guess, and a guess that gets replaced one frame later is worse than the
+      // raw body it covers.
+      const next = inferSkeleton(raw)
+      if (next.shape === 'generic') return
+      payload = <GenuiSkeleton {...next} />
     }
     clearDiagnostic(block)
     // Mount FIRST, hide AFTER (issue #19): the stock block is only ever
@@ -1069,6 +1291,7 @@ export function installDomFenceRenderer(
     block.style.display = 'none'
     block.setAttribute(PROCESSED, '')
     mounts.set(block, { root, container, block, lastRaw: raw, lastSettled: settled, language: acceptedLanguage, lastNode: payload, skeleton: node === null })
+    containerBlocks.set(container, block)
   }
 
   /** Queue a block for takeover. A block already taken over is skipped here:
@@ -1213,7 +1436,7 @@ export function installDomFenceRenderer(
     if (disposed) return
     const element = node instanceof Element ? node : node.parentElement
     if (element === null) return
-    if (element.closest(`.${CONTAINER_CLASS}, .${DIAGNOSTIC_CLASS}`) !== null) return
+    if (element.closest(IGNORED_MUTATION_SCOPE) !== null) return
     const known = dirtyTargets.get(node)
     if (known === undefined) {
       if (dirtyTargets.size >= DIRTY_TARGET_LIMIT) return
@@ -1255,28 +1478,58 @@ export function installDomFenceRenderer(
     rotationNext = (rotationNext + visited) % total
   }
 
+  /** Mark the existing root owning a changed node, without scanning unrelated
+   * blocks. Walking parents also covers unknown-class and tag-text surfaces. */
+  function markOwnedAncestors(node: Node | null): void {
+    for (let current = node; current !== null; current = current.parentNode) {
+      const block = containerBlocks.get(current) ?? current
+      if (!(block instanceof HTMLElement)) continue
+      if (mounts.has(block)) dirtyMounts.add(block)
+      if (diagnostics.has(block)) dirtyDiagnostics.add(block)
+    }
+  }
+
+  /** Structural changes can remove/move a whole row. Query only that changed
+   * subtree, including detached nodes; text updates never take this path. */
+  function markOwnedSubtree(node: Node): void {
+    markOwnedAncestors(node)
+    if (!(node instanceof Element)) return
+    // Plugin-owned children cannot contain host fences. The container itself
+    // was already resolved above, including a detached/emptied container.
+    if (containerBlocks.has(node) || node.closest(IGNORED_MUTATION_SCOPE) !== null) return
+    for (const element of node.querySelectorAll(`[${PROCESSED}], .${CONTAINER_CLASS}, .${DIAGNOSTIC_CLASS}`)) {
+      markOwnedAncestors(element)
+    }
+  }
+
   /** Pre-paint repair: the host's React re-renders during streaming can wipe
    * our foreign container or reset the hide. Re-apply the surgery in the
    * observer microtask (before paint) so raw JSON never flashes between
    * chunks; the rAF sweep re-renders React state at its own pace. */
-  function repairSurgery(): void {
+  function repairSurgery(mountBlocks: Iterable<HTMLElement>, diagnosticBlocks: Iterable<HTMLElement>): void {
     // Diagnostics are plugin-owned DOM too: a host re-render that detaches or
     // empties their container must be repaired before paint.
-    for (const [block, diagnostic] of Array.from(diagnostics)) {
+    for (const block of diagnosticBlocks) {
+      const diagnostic = diagnostics.get(block)
+      if (diagnostic === undefined) continue
       if (!block.isConnected) {
         clearDiagnostic(block)
         continue
       }
-      renderDiagnostic(block, diagnostic.raw)
+      // This strip has already been validated. Reattachment needs no parse
+      // and no React render inside the observer microtask.
+      if (diagnostic.container.parentElement !== block.parentElement
+          || diagnostic.container.nextElementSibling !== block) block.before(diagnostic.container)
     }
-    for (const mount of Array.from(mounts.values())) {
-      const block = mount.block
+    for (const block of mountBlocks) {
+      const mount = mounts.get(block)
+      if (mount === undefined) continue
       // The host replaced the row: the stock block is gone but our foreign
       // container may still be attached. Drop the mount NOW (removes the
       // orphan container) instead of waiting for the sweep — the new block
       // will be taken over by the sweep's discovery pass.
       if (!block.isConnected) {
-        if (mount.container.isConnected) unmountBlock(block)
+        unmountBlock(block)
         continue
       }
       // Re-attach the container BEFORE re-hiding (issue #19: never hide the
@@ -1292,6 +1545,8 @@ export function installDomFenceRenderer(
         block.style.display = ''
         block.removeAttribute(PROCESSED)
         mounts.delete(block)
+        dirtyMounts.delete(block)
+        containerBlocks.delete(mount.container)
         try {
           mount.root.unmount()
         } catch {
@@ -1310,14 +1565,25 @@ export function installDomFenceRenderer(
    * the streaming→settled transition), repair surgery, re-check what the
    * session source may have unlocked, then take over the dsh-ui blocks
    * discovery queued — settled or still streaming. */
-  function sweep(): void {
+  function sweep(full = false): void {
     if (disposed) return
+    if (full) invalidateDocumentTopology()
     sourceLanguages.beginSweep()
     const sourceSession = sourceSessionOf(ctx)
     const sessionId = sourceSession.available ? sourceSession.sessionId : undefined
     if (sourceSession.available) lastAvailableSessionId = sourceSession.sessionId
     syncChatSubscription(sessionId)
-    for (const [block, mount] of mounts) {
+    // Source/session notifications are global invalidations, unlike DOM
+    // updates. The slow sweep deliberately retains the complete safety net.
+    const all = full || fullMaintenance || sourceChanged
+    fullMaintenance = false
+    const mountBlocks = Array.from(all ? mounts.keys() : dirtyMounts)
+    const diagnosticBlocks = Array.from(all ? diagnostics.keys() : dirtyDiagnostics)
+    dirtyMounts.clear()
+    dirtyDiagnostics.clear()
+    for (const block of mountBlocks) {
+      const mount = mounts.get(block)
+      if (mount === undefined) continue
       if (!block.isConnected) {
         unmountBlock(block)
         continue
@@ -1325,8 +1591,10 @@ export function installDomFenceRenderer(
       const raw = rawOf(block)
       const settled = isSettled(block)
       const domLanguage = tagTextBodyOf(block) !== null ? 'dsh-ui' : domLanguageOf(block)
-      const sourceLanguage = domLanguage === null ? sourceLanguages.get(block) : undefined
-      const language = domLanguage ?? sourceLanguage
+      // 宿主把围栏标签写成 `dsh-ui>` 这类带尾部标点的形态时，严格相等会让这条围栏
+      // 永远停在代码块上（真实会话：一条消息内 182 处）。快照侧已在解析时规范化，
+      // 这里再兜一层，覆盖 DOM 语言与历史缓存值两条路径。
+      const language = resolveFenceLanguage(block, () => sourceLanguages.get(block))
       const sourceUnavailable = domLanguage === null
         && (!sourceSession.available || sourceLanguages.isSessionUnavailable())
       const validGenui = language === 'dsh-ui'
@@ -1373,6 +1641,7 @@ export function installDomFenceRenderer(
           }
           const fresh = document.createElement('div')
           fresh.className = CONTAINER_CLASS
+          containerBlocks.delete(mount.container)
           mount.container.remove()
           block.after(fresh)
           try {
@@ -1381,6 +1650,7 @@ export function installDomFenceRenderer(
             freshRoot.render(wrapFenceNode(node, context, handler, !settled))
             mount.root = freshRoot
             mount.container = fresh
+            containerBlocks.set(fresh, block)
           } catch (error) {
             // Never leave the stock block hidden behind a broken root:
             // restore the raw code block and drop the mount (issue #19).
@@ -1394,7 +1664,11 @@ export function installDomFenceRenderer(
         } else {
           try {
             const handler: GenuiActionHandler = (action, payload) => sendActionForBlock(block, action, payload)
-            mount.root.render(wrapFenceNode(node, context, handler, !settled))
+            const render = (): void => { mount.root.render(wrapFenceNode(node, context, handler, !settled)) }
+            // The skeleton leaving is the moment the reader notices: cross-fade
+            // it into the component instead of cutting.
+            if (mount.skeleton) swapWithTransition(mount.container, render)
+            else render()
           } catch (error) {
             // Never leave the stock block hidden behind a broken root: restore
             // the raw code block and drop the mount (issue #19).
@@ -1409,11 +1683,13 @@ export function installDomFenceRenderer(
         mount.skeleton = false
       }
     }
-    repairSurgery()
+    repairSurgery(mountBlocks, diagnosticBlocks)
     // Diagnostics for blocks that are gone or were taken over must go with
     // them; one whose DOM the host wiped is rebuilt here (sweep cadence, never
     // inside the mutation callback).
-    for (const [block, diagnostic] of Array.from(diagnostics)) {
+    for (const block of diagnosticBlocks) {
+      const diagnostic = diagnostics.get(block)
+      if (diagnostic === undefined) continue
       if (!block.isConnected || block.hasAttribute(PROCESSED)) {
         clearDiagnostic(block)
         continue
@@ -1422,9 +1698,8 @@ export function installDomFenceRenderer(
       // label is no longer dsh-ui is somebody else's fence, so our explanation
       // would be about the wrong block.
       if (isSettled(block)) {
-        const domLanguage = tagTextBodyOf(block) !== null ? 'dsh-ui' : domLanguageOf(block)
-        const sourceLanguage = domLanguage === null ? sourceLanguages.get(block) : undefined
-        if ((domLanguage ?? sourceLanguage) !== 'dsh-ui') {
+        const language = resolveFenceLanguage(block, candidate => sourceLanguages.get(candidate))
+        if (language !== 'dsh-ui') {
           clearDiagnostic(block)
           continue
         }
@@ -1453,58 +1728,93 @@ export function installDomFenceRenderer(
   }
 
   const unsubscribeSessions = typeof ctx.sessions.list.subscribe === 'function'
-    ? ctx.sessions.list.subscribe(schedule)
+    ? ctx.sessions.list.subscribe(() => {
+      fullMaintenance = true
+      schedule()
+    })
     : undefined
 
   const observer = new MutationObserver(records => {
+    // A container the host emptied is repair work wherever it sits, and the
+    // removal is the only record that carries it: mark those first.
+    let relevant = false
     // Restore detached roots before paint, retaining input and pending actions.
     // The latest removal owns the current tree if several commits were batched.
     for (const record of [...records].reverse()) {
       if (record.removedNodes.length === 0 || record.target.childNodes.length > 0) continue
       const target = record.target
-      const mount = [...mounts.values()].find(candidate => candidate.container === target)
-      if (mount !== undefined) {
+      const owner = containerBlocks.get(target)
+      const mount = owner === undefined ? undefined : mounts.get(owner)
+      if (mount !== undefined && mount.container === target) {
+        dirtyMounts.add(mount.block)
+        relevant = true
         if (!mount.block.isConnected || isPanelRoot(mount.lastNode)) continue
         mount.container.append(...record.removedNodes)
         continue
       }
       // The same surgery for a visible diagnostic the host emptied: re-append
       // its own nodes instead of leaving the author without an explanation.
-      const diagnostic = [...diagnostics.values()].find(candidate => candidate.container === target)
-      if (diagnostic !== undefined) diagnostic.container.append(...record.removedNodes)
+      const diagnostic = owner === undefined ? undefined : diagnostics.get(owner)
+      if (diagnostic !== undefined && diagnostic.container === target) {
+        dirtyDiagnostics.add(owner!)
+        relevant = true
+        diagnostic.container.append(...record.removedNodes)
+      }
     }
+    // Filter each record, not just the batch: a simultaneous composer or
+    // plugin commit must not turn an unrelated subtree into maintenance work.
     for (const record of records) {
-      // Structure, and the streaming→settled flip, can unlock a whole subtree
-      // (a history load, a session switch, a row that stopped streaming): those
-      // get the subtree pass. Text growth is the streaming case and stays on
-      // the cheap surface path.
+      const element = record.target instanceof Element ? record.target : record.target.parentElement
+      // Membership-changing host attributes matter even after they put the
+      // target in an excluded subtree. Ignore our own React class commits.
+      if (record.type === 'attributes' && record.attributeName !== 'class') invalidateDocumentMutation(record)
+      if (element !== null && element.closest(IGNORED_MUTATION_SCOPE) !== null) continue
+      relevant = true
+      if (record.type !== 'attributes' || record.attributeName === 'class') invalidateDocumentMutation(record)
+      markOwnedAncestors(record.target)
       if (record.type === 'characterData') {
         markDirty(record.target, false)
         continue
       }
       if (record.type === 'childList') {
-        for (const node of record.addedNodes) markDirty(node, true)
+        // The target matters even when no nodes were added (an emptied body
+        // or removed banner). Skip layout-only targets: our own root writes
+        // must not spend discovery budget ahead of pending takeovers.
+        // Neighbors catch insertion between block/root.
+        if (element !== null && (element.tagName === 'SPAN' || element.closest(CODE_CONTEXT) !== null)) {
+          markDirty(record.target, false)
+        }
+        markOwnedAncestors(record.previousSibling)
+        markOwnedAncestors(record.nextSibling)
+        for (const node of record.removedNodes) markOwnedSubtree(node)
+        for (const node of record.addedNodes) {
+          markOwnedSubtree(node)
+          markDirty(node, true)
+        }
         continue
       }
+      // Host metadata applies to all mounted descendants of its row/surface.
+      markOwnedSubtree(record.target)
       markDirty(record.target, true)
     }
-    // Pre-paint pass: surgery repair only (cheap DOM ops); the React
-    // re-render goes through the rAF-scheduled sweep.
-    repairSurgery()
+    if (!relevant) return
+    // Pre-paint surgery stays synchronous, but only for affected roots.
+    // Keep their dirty flags for the subsequent React maintenance sweep.
+    repairSurgery(Array.from(dirtyMounts), Array.from(dirtyDiagnostics))
     schedule()
   })
   observer.observe(document.body, {
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ['data-streaming'],
+    attributeFilter: FENCE_ATTRIBUTES,
     // React streams tokens as text-node updates: without characterData the
     // observer would only fire on structural changes and miss body growth.
     characterData: true,
   })
   let slowTicks = 0
   const interval = window.setInterval(() => {
-    sweep()
+    sweep(true)
     // The rotation is the net for changes the observer cannot see, so it rides
     // the slow tick only every ROTATION_TICKS of them: it re-queries the whole
     // transcript, and on a streaming page the sweep already runs per frame.
@@ -1517,7 +1827,9 @@ export function installDomFenceRenderer(
   // frames while the scrollback drains from the queue. It is one synchronous
   // pass by design — the budget below bounds discovery, not a single subtree
   // query, and a session switch must not leave raw spec on screen.
+  syncChatSubscription(sessionIdOf())
   const initial = findFenceCandidates()
+  documentFences = new Map(initial.map(candidate => [candidate, 0]))
   for (let index = initial.length - 1; index >= 0; index -= 1) enqueueCandidate(initial[index])
   sweep()
 
@@ -1533,8 +1845,11 @@ export function installDomFenceRenderer(
       rafId = null
     }
     dirtyTargets.clear()
+    dirtyMounts.clear()
+    dirtyDiagnostics.clear()
     pendingCandidates.clear()
     awaitingSource.clear()
+    invalidateDocumentTopology()
     for (const block of Array.from(mounts.keys())) unmountBlock(block)
     for (const block of Array.from(diagnostics.keys())) clearDiagnostic(block)
   }

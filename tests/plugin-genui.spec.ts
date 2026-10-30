@@ -1,8 +1,12 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import * as GenUI from '../src/plugin/index.ts'
+
+import { COMPONENT_SCHEMAS } from '../src/client/genui-runtime/schema.ts'
 
 /** Boot the plugin and return the assembled system-prompt sections. */
 async function assemble() {
@@ -12,15 +16,15 @@ async function assemble() {
   return ctx.systemPrompt.assemble({})
 }
 
-/** The complete whitelist the slim fence section must still advertise. */
-const WHITELISTED_COMPONENT_TYPES = [
-  'text', 'row', 'col', 'grid', 'card',
-  'button', 'input', 'textarea', 'select', 'checkbox', 'switch', 'slider', 'radio', 'submit', 'quiz', 'link',
-  'badge', 'stat', 'progress', 'divider', 'spacer', 'list', 'table', 'audio', 'video',
-  'chart', 'tabs', 'accordion', 'avatar', 'plot', 'callout', 'steps',
-  'keyvalue', 'json', 'code', 'diff', 'copy',
-  'mermaid', 'scene3d', 'timeline', 'file-tree', 'breadcrumb',
-] as const
+/**
+ * The complete whitelist the slim fence section must still advertise.
+ *
+ * Derived from COMPONENT_SCHEMAS rather than hand-copied: the previous literal
+ * had drifted behind the schema (hero / image / icon / blocks / arrow / echart /
+ * diagram / svg were all missing), so the gate stayed green while the prompt
+ * went stale. Any future node type now fails this test until it is advertised.
+ */
+const WHITELISTED_COMPONENT_TYPES: readonly string[] = Object.keys(COMPONENT_SCHEMAS)
 
 const BROKEN_FENCE_REPLY = '```dsh-ui\n{"items":[{"type":"stat"}]}\n```'
 
@@ -78,6 +82,12 @@ describe('genui:fence section', () => {
     expect(text).toContain('never emit these placeholders literally')
     expect(text).toContain('Tool channel: render_ui')
     expect(text).not.toContain('"title":"可选标题"')
+    for (const type of ['stat', 'table', 'progress', 'keyvalue', 'steps', 'file-tree', 'callout']) {
+      expect(text).toContain(`{"type":"${type}"`)
+    }
+    expect(text).toContain('组件节点必须带字符串')
+    expect(text).toContain('file-tree')
+    expect(text).toContain('file-tree.items[].type` 表示 `file` 或 `dir`')
   })
 
   it('omits render_ui guidance from the system prompt when the tool is disabled', async () => {
@@ -108,6 +118,28 @@ describe('genui:fence section', () => {
     expect(text.length).toBeLessThanOrEqual(3400)
     for (const type of WHITELISTED_COMPONENT_TYPES) {
       expect(text).toContain(type)
+    }
+  })
+
+  it('carries a judgment, not a component quota', async () => {
+    // The quota ("默认就该出 UI", "≥3 条要点就出 list", "一条回答 3–8 个组件")
+    // shaped every answer into the same skeleton. The replacement is one
+    // question; a reintroduced count is a regression, so it is asserted here.
+    const assembly = await assemble()
+    const section = assembly.sections.find(s => s.name === 'genui:fence')
+    const text = typeof section!.text === 'string' ? section!.text : ''
+    expect(text).toContain('删掉这个组件，读者会不会更费劲')
+    for (const quota of ['默认就该出 UI', '3–8 个组件', '最后自检一次']) {
+      expect(text).not.toContain(quota)
+    }
+  })
+
+  it('keeps the skill a reference instead of a menu', async () => {
+    const skill = readFileSync('SKILL.md', 'utf8')
+    expect(skill).toContain('删掉这个组件，读者会不会更费劲')
+    expect(skill).toContain('没有配额，也没有硬触发')
+    for (const quota of ['硬触发（出现就至少出一个围栏', '从成套结构出发']) {
+      expect(skill).not.toContain(quota)
     }
   })
 
@@ -311,7 +343,8 @@ describe('genui:fence section', () => {
 
     const genui = await ctx.plugin(GenUI)
 
-    expect(await ctx.skills.list()).toEqual(expect.arrayContaining([
+    const catalog = await ctx.skills.list()
+    expect(catalog).toEqual(expect.arrayContaining([
       expect.objectContaining({
         name: 'genui',
         provider: 'dsh-genui',
@@ -322,6 +355,9 @@ describe('genui:fence section', () => {
         },
       }),
     ]))
+    const summary = catalog.find(skill => skill.name === 'genui')
+    const frontmatter = readFileSync('SKILL.md', 'utf8').split('\n---\n')[0]
+    expect(frontmatter?.split('\n')).toContain(`description: ${JSON.stringify(summary?.description)}`)
 
     const skill = await ctx.skills.get('genui')
     expect(skill).toMatchObject({
@@ -329,8 +365,20 @@ describe('genui:fence section', () => {
       provider: 'dsh-genui',
       source: 'bundled',
     })
+    expect(skill?.description).toBe(summary?.description)
     expect(skill?.description).toContain('Preserve conversation language')
     expect(skill?.description).not.toMatch(/[\u3400-\u9fff]/u)
+
+    // The description the panel shows is PARSED out of SKILL.md, not a second copy in
+    // code. Asserting the two agree would not catch the bug: both copies shared the
+    // sentence \`Preserve conversation language\`, and they had already drifted apart
+    // everywhere else, so a substring check passed while the panel showed a stale
+    // sentence the model never read. Compare against the file instead.
+    const skillMd = readFileSync(join(process.cwd(), 'SKILL.md'), 'utf8')
+    const front = skillMd.slice(4, skillMd.indexOf('\n---\n', 4))
+    const declared = /^description:\s*(.+?)\s*$/mu.exec(front)?.[1]?.replace(/^['"]|['"]$/gu, '')
+    expect(declared, 'SKILL.md must declare a description').toBeDefined()
+    expect(skill?.description).toBe(declared)
     expect(skill?.content).toContain('chart:')
     expect(skill?.content).not.toContain('name: genui')
 

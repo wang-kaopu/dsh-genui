@@ -7,15 +7,23 @@
  * components live in src/client/blocks/*.
  */
 import { renderInline } from './inline.ts'
+import { CopyPreviewContext, useCopyPreviewState } from './copy-preview-state.ts'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useGenuiAction } from './action-context.ts'
 import css from './GenuiBlock.module.css'
 import { loadBlockState, saveBlockState } from './interaction-store.ts'
+import { GENUI_LIMITS } from './genui-runtime/index.ts'
 import { recordFence, recordInteraction } from './achievement-store.ts'
 import { renderNode } from './blocks/render-node.tsx'
 import type { AnswersState, GenuiBlockProps } from './blocks/state.ts'
+import { collectHiddenKeys } from './conditions.ts'
 import type { GenuiSpec } from './spec.ts'
 import { compileSubmissionRegistry } from './submission-registry.ts'
+import { evaluateComputed, resolveComputedSpec } from './computed.ts'
+import { parseDecimalNumber } from './safe-math.ts'
+import { isDatePickerValueValid } from './date-picker.ts'
+import { walkGenuiNodes } from './walk-spec.ts'
+import { repairMap } from './map-data.ts'
 
 export const GENUI_ACTION_DEBOUNCE_MS = 300
 
@@ -69,12 +77,9 @@ function useDebouncedAction(onAction: GenuiBlockProps['onAction'] | undefined): 
  * repaired content is unchanged (a chunk that closed no new component). The
  * default shallow memo would then re-render the whole tree per chunk — up to
  * ~200 full-tree renders for a max-size fence. Stringify equality makes the
- * memo skip renders whose content did not actually change; the cost is one
- * JSON.stringify per chunk (≤200 nodes, negligible next to a React tree
- * reconciliation). `stateKey` already embeds the content fingerprint, so when
- * both keys are equal and non-undefined the specs necessarily stringify
- * equal — the stringify branch matters for the streaming path (stateKey
- * undefined).
+ * 使用内容指纹跳过未变化的渲染，每个数据片段只执行一次 JSON.stringify
+ *（最多 200 个节点，和 React 树比较相比开销很小）。面板追加会沿用状态标识，
+ * 因此标识不变时仍需比较 spec。
  */
 function specEquivalent(a: GenuiSpec, b: GenuiSpec): boolean {
   if (a === b) return true
@@ -85,6 +90,7 @@ function specEquivalent(a: GenuiSpec, b: GenuiSpec): boolean {
  * when the reply settles; switching an existing durable key starts fresh. */
 function GenuiBlockInstance({ spec, stateKey, animateEntrance = true, initialState, onStateChange, onStateSnapshot }: GenuiBlockProps) {
   const gap = spec.gap ?? 16
+  const copyPreviews = useCopyPreviewState(spec)
   const onAction = useDebouncedAction(useGenuiAction())
   const stateChangeRef = useRef(onStateChange)
   stateChangeRef.current = onStateChange
@@ -94,16 +100,119 @@ function GenuiBlockInstance({ spec, stateKey, animateEntrance = true, initialSta
   // state into one action. Block-local state survives streaming/panel
   // re-renders, and with a stateKey it also survives refresh/reopen.
   const [persisted] = useState(() => initialState ?? (onStateChange !== undefined || stateKey === undefined ? null : loadBlockState(stateKey)))
-  const [answers, setAnswers] = useState<Record<string, string>>(persisted?.answers ?? {})
-  const [multiAnswers, setMultiAnswers] = useState<Record<string, string[]>>(persisted?.multiAnswers ?? {})
-  const [fields, setFields] = useState<Record<string, string>>(persisted?.fields ?? {})
-  const submissionRegistry = useMemo(() => compileSubmissionRegistry(spec), [spec])
+  const [storedAnswers, setAnswers] = useState<Record<string, string>>(persisted?.answers ?? {})
+  const [storedMultiAnswers, setMultiAnswers] = useState<Record<string, string[]>>(persisted?.multiAnswers ?? {})
+  const fieldKinds = useMemo(() => {
+    const numeric = new Set<string>()
+    const secret = new Set<string>()
+    const declared = new Set<string>()
+    const fieldOptions = new Map<string, Set<string>>()
+    const segmentedDefaults = new Map<string, string>()
+    const datePickers = new Map<string, { mode: 'single' | 'range'; min?: string; max?: string }>()
+    walkGenuiNodes(spec, node => {
+      if ((node.type === 'input' || node.type === 'textarea' || node.type === 'select'
+        || node.type === 'slider' || node.type === 'map' || node.type === 'diagram'
+        || node.type === 'editor' || node.type === 'date-picker' || node.type === 'segmented-control')
+        && node.id !== undefined) declared.add(node.id)
+      if (node.type === 'map' && node.id !== undefined) {
+        fieldOptions.set(node.id, new Set(repairMap(node)?.locations.map(location => location.id)))
+      }
+      if (node.type === 'diagram' && node.id !== undefined) {
+        fieldOptions.set(node.id, new Set(node.nodes.slice(0, GENUI_LIMITS.maxDiagramNodes).map(item => item.id)))
+      }
+      if (node.type === 'segmented-control' && node.id !== undefined) {
+        fieldOptions.set(node.id, new Set(node.options))
+        if (node.value !== undefined && node.options.includes(node.value)) segmentedDefaults.set(node.id, node.value)
+      }
+      if (node.type === 'date-picker' && node.id !== undefined) {
+        datePickers.set(node.id, { mode: node.mode ?? 'single',
+          ...(node.min === undefined ? {} : { min: node.min }),
+          ...(node.max === undefined ? {} : { max: node.max }) })
+      }
+      if (node.type !== 'input' || node.id === undefined) return
+      if (node.inputType === 'number') numeric.add(node.id)
+      if (node.inputType === 'password') secret.add(node.id)
+    })
+    return { numeric, secret, declared, fieldOptions, segmentedDefaults, datePickers }
+  }, [spec])
+  const secretFields = fieldKinds.secret
+  // 输入草稿始终归属于字段；计算使用最近的有效数字，提交与保存使用草稿值。
+  const [fieldState, setFieldState] = useState(() => {
+    const fields = Object.fromEntries(Object.entries(persisted?.fields ?? {}).filter(([id]) => !secretFields.has(id)))
+    const numericValues = Object.fromEntries(Object.entries(fields).filter(([id, value]) =>
+      fieldKinds.numeric.has(id) && (value.trim() === '' || parseDecimalNumber(value) !== undefined)))
+    return { fields, numericValues }
+  })
+  const sanitizeField = (id: string, value: string): string => {
+    const datePicker = fieldKinds.datePickers.get(id)
+    if (datePicker !== undefined && value !== ''
+      && !isDatePickerValueValid(value, datePicker.mode, datePicker.min, datePicker.max)) return ''
+    if (fieldKinds.fieldOptions.get(id)?.has(value) === false) return fieldKinds.segmentedDefaults.get(id) ?? ''
+    return value
+  }
+  const fields = useMemo(() => Object.fromEntries(Object.entries(fieldState.fields)
+    .filter(([id]) => fieldKinds.declared.has(id) && !secretFields.has(id))
+    .map(([id, value]) => [id, sanitizeField(id, value)])), [fieldState.fields, fieldKinds, secretFields])
+  // 流式更换选项后清理无效字段，保留仍然合法的用户选择。
+  useEffect(() => {
+    setFieldState(prev => {
+      const entries = Object.entries(prev.fields).filter(([id]) => fieldKinds.declared.has(id) && !secretFields.has(id))
+        .map(([id, value]): [string, string] => [id, sanitizeField(id, value)])
+      if (entries.length === Object.keys(prev.fields).length && entries.every(([id, value]) => prev.fields[id] === value)) return prev
+      return { fields: Object.fromEntries(entries), numericValues: Object.fromEntries(Object.entries(prev.numericValues)
+        .filter(([id]) => fieldKinds.numeric.has(id) && !secretFields.has(id))) }
+    })
+  }, [fieldKinds, secretFields])
+  const computedSpec = useMemo(() => {
+    const numericValues = Object.fromEntries(Object.entries(fieldState.numericValues).filter(([id]) => fieldKinds.numeric.has(id)))
+    return resolveComputedSpec(spec, evaluateComputed(spec, { ...fields, ...numericValues }))
+  }, [spec, fields, fieldState.numericValues, fieldKinds])
+  const submissionRegistry = useMemo(() => compileSubmissionRegistry(computedSpec), [computedSpec])
+  const answers = useMemo(() => Object.fromEntries(Object.entries(storedAnswers).filter(([group, choice]) => {
+    const member = submissionRegistry.members.get(group)
+    return member?.kind === 'radio' && member.options.includes(choice)
+  })), [storedAnswers, submissionRegistry])
+  const multiAnswers = useMemo(() => Object.fromEntries(Object.entries(storedMultiAnswers).flatMap(([group, choices]) => {
+    const member = submissionRegistry.members.get(group)
+    return member?.kind === 'checkbox' ? [[group, choices.filter(choice => member.choices.has(choice))]] : []
+  })), [storedMultiAnswers, submissionRegistry])
   const [locked, setLocked] = useState(persisted?.locked === true)
   const [round, setRound] = useState(0)
   // Secret (password) field ids: their values never persist and never join
   // submit collection — the input itself stays masked and its own action
   // still delivers the value on explicit user submit.
-  const [secretFields, setSecretFields] = useState<ReadonlySet<string>>(new Set())
+  const invalidNumericFields = useMemo(() => new Set(Object.entries(fields)
+    .filter(([id, value]) => fieldKinds.numeric.has(id) && value.trim() !== '' && parseDecimalNumber(value) === undefined)
+    .map(([id]) => id)), [fields, fieldKinds])
+  // Field ids / answer groups hidden by a `when` condition right now. Submit
+  // uses this to drop their values and their required-status: a hidden control
+  // must not submit a stale value, nor block submission by looking unanswered.
+  const hiddenKeys = useMemo(() => {
+    let hidden = new Set<string>()
+    const seen = new Set<string>()
+    const conservativeHidden = new Set<string>()
+    for (let pass = 0; pass <= GENUI_LIMITS.maxNodes; pass += 1) {
+      const current = {
+        fields: Object.fromEntries(Object.entries(fields).filter(([id]) => !hidden.has(id))),
+        answers: Object.fromEntries(Object.entries(answers).filter(([id]) => !hidden.has(id))),
+        multiAnswers: Object.fromEntries(Object.entries(multiAnswers).filter(([id]) => !hidden.has(id))),
+      }
+      const next = collectHiddenKeys(computedSpec.items, current)
+      if (next.size === hidden.size && [...next].every(id => hidden.has(id))) return next
+      for (const id of next) conservativeHidden.add(id)
+      const signature = [...next].sort().join('\u0000')
+      // Direct GenuiBlock callers may supply a spec that bypassed validation.
+      // A cycle must not crash the entire conversation; suppress every field
+      // involved in an unstable visibility pass instead.
+      if (seen.has(signature)) return conservativeHidden
+      seen.add(signature)
+      hidden = new Set(next)
+    }
+    return conservativeHidden
+  }, [computedSpec, fields, answers, multiAnswers])
+  const visibleFields = useMemo(() => Object.fromEntries(Object.entries(fields).filter(([id]) => !hiddenKeys.has(id))), [fields, hiddenKeys])
+  const visibleAnswers = useMemo(() => Object.fromEntries(Object.entries(answers).filter(([id]) => !hiddenKeys.has(id))), [answers, hiddenKeys])
+  const visibleMultiAnswers = useMemo(() => Object.fromEntries(Object.entries(multiAnswers).filter(([id]) => !hiddenKeys.has(id))), [multiAnswers, hiddenKeys])
   const setAnswer = useCallback((group: string, choice: string) => {
     setAnswers(prev => (prev[group] === choice ? prev : { ...prev, [group]: choice }))
   }, [])
@@ -130,11 +239,22 @@ function GenuiBlockInstance({ spec, stateKey, animateEntrance = true, initialSta
     // next mount. Blank values are still excluded from submit collection by
     // SubmitNode's filledFields filter (and from persistence for secrets), so
     // this does not change what the model receives.
-    setFields(prev => (prev[id] === value ? prev : { ...prev, [id]: value }))
-  }, [])
-  const registerSecretField = useCallback((id: string) => {
-    setSecretFields(prev => (prev.has(id) ? prev : new Set(prev).add(id)))
-  }, [])
+    if (secretFields.has(id)) return
+    setFieldState(prev => {
+      const validNumber = fieldKinds.numeric.has(id) && (value.trim() === '' || parseDecimalNumber(value) !== undefined)
+      let numericValues = prev.numericValues
+      if (validNumber && numericValues[id] !== value) numericValues = { ...numericValues, [id]: value }
+      else if (!fieldKinds.numeric.has(id) && Object.hasOwn(numericValues, id)) {
+        numericValues = { ...numericValues }
+        delete numericValues[id]
+      }
+      if (Object.hasOwn(prev.fields, id) && prev.fields[id] === value && numericValues === prev.numericValues) return prev
+      return {
+        fields: { ...prev.fields, [id]: value },
+        numericValues,
+      }
+    })
+  }, [fieldKinds, secretFields])
   const clear = useCallback(() => {
     setAnswers({})
     setMultiAnswers({})
@@ -143,10 +263,10 @@ function GenuiBlockInstance({ spec, stateKey, animateEntrance = true, initialSta
   }, [])
   const answersState = useMemo<AnswersState>(
     () => ({
-      answers, multiAnswers, fields, secretFields, registry: submissionRegistry, locked, round,
-      setAnswer, setMultiAnswer, setField, registerSecretField, clear, setLocked,
+      answers: visibleAnswers, multiAnswers: visibleMultiAnswers, fields: visibleFields, secretFields, invalidNumericFields, hidden: hiddenKeys, conditionHidden: hiddenKeys, registry: submissionRegistry, locked, round,
+      setAnswer, setMultiAnswer, setField, clear, setLocked,
     }),
-    [answers, multiAnswers, fields, secretFields, submissionRegistry, locked, round, setAnswer, setMultiAnswer, setField, registerSecretField, clear],
+    [visibleAnswers, visibleMultiAnswers, visibleFields, secretFields, invalidNumericFields, hiddenKeys, submissionRegistry, locked, round, setAnswer, setMultiAnswer, setField, clear],
   )
   const durableState = useMemo(() => {
     const safeFields = Object.fromEntries(Object.entries(fields).filter(([id]) => !secretFields.has(id)))
@@ -160,6 +280,12 @@ function GenuiBlockInstance({ spec, stateKey, animateEntrance = true, initialSta
   useEffect(() => {
     onStateSnapshot?.(durableState)
   }, [durableState, onStateSnapshot])
+  const durableRef = useRef(durableState)
+  durableRef.current = durableState
+  // 收起面板会卸载表单；卸载时立即保存草稿，避免丢失防抖等待期间的修改。
+  useEffect(() => () => {
+    if (!savesExternally && stateKey !== undefined) saveBlockState(stateKey, durableRef.current)
+  }, [stateKey, savesExternally])
   // Achievement telemetry: every emitted action counts as one interaction
   // (the debounced emit fires once per real user action).
   const trackedAction = useMemo(() => {
@@ -186,31 +312,33 @@ function GenuiBlockInstance({ spec, stateKey, animateEntrance = true, initialSta
     recordFence(spec)
   }, [spec])
   return (
-    <div className={css.block} data-genui>
-      {spec.title !== undefined && <div className={css.banner}>{renderInline(spec.title)}</div>}
-      <div className={css.col} style={{ gap: `${gap}px` }}>
-        {spec.items.map((c, i) => (
-          // Staggered reveal: each root item fades/slides in after its
-          // predecessors, so the block assembles piece by piece instead of
-          // popping in as one slab. Delay capped so long specs still settle
-          // quickly; prefers-reduced-motion disables it (see CSS).
-          <div
-            key={i}
-            className={css.reveal}
-            style={{
-              animationDelay: `${Math.min(i * 90, 720)}ms`,
-              ...(!animateEntrance || persisted !== null ? { animation: 'none' } : {}),
-            }}
-            onAnimationEnd={event => {
-              // Reattaching this DOM node must not replay its completed entrance.
-              if (event.target === event.currentTarget) event.currentTarget.style.animation = 'none'
-            }}
-          >
-            {renderNode(c, i, trackedAction, 0, answersState)}
-          </div>
-        ))}
+    <CopyPreviewContext.Provider value={copyPreviews}>
+      <div className={css.block} data-genui>
+        {computedSpec.title !== undefined && <div className={css.banner}>{renderInline(computedSpec.title)}</div>}
+        <div className={css.col} style={{ gap: `${gap}px` }}>
+          {computedSpec.items.map((c, i) => (
+            // Keep a trace of rhythm, cap the wait: 90ms per item but never
+            // more than 160ms of it, so the last root item is fully visible at
+            // ~410ms instead of 1.17s. The uncapped 720ms version made a ready
+            // component sit invisible while its predecessors faded in.
+            <div
+              key={i}
+              className={css.reveal}
+              style={{
+                animationDelay: `${Math.min(i * 90, 160)}ms`,
+                ...(!animateEntrance || persisted !== null ? { animation: 'none' } : {}),
+              }}
+              onAnimationEnd={event => {
+                // Reattaching this DOM node must not replay its completed entrance.
+                if (event.target === event.currentTarget) event.currentTarget.style.animation = 'none'
+              }}
+            >
+              {renderNode(c, i, trackedAction, 0, answersState)}
+            </div>
+          ))}
+        </div>
       </div>
-    </div>
+    </CopyPreviewContext.Provider>
   )
 }
 

@@ -35,6 +35,87 @@ describe('GenUI runtime schema normalization', () => {
     expect(validateGenuiSpec({ type: 'text', content: 'bare component' })).toEqual({ ok: true, errors: [] })
   })
 
+  it('infers the six uniquely identified component types without changing the input', () => {
+    const spec = {
+      gap: 12,
+      items: [
+        { columns: ['Name'], rows: [['AGENTS.md']] },
+        { pairs: [{ key: 'status', value: 'active' }] },
+        { steps: [{ title: 'Review' }] },
+        { diffs: [{ path: 'a.ts', newText: 'updated' }] },
+        { meshes: [{ shape: 'box' }] },
+        { tabs: [{ label: 'Details', items: [{ columns: ['Name'], rows: [['README.md']] }] }] },
+      ],
+    }
+    const original = structuredClone(spec)
+    const normalized = normalizeGenuiSpec(spec)
+
+    expect(normalized.value).toEqual({
+      gap: 12,
+      items: [
+        { type: 'table', columns: ['Name'], rows: [['AGENTS.md']] },
+        { type: 'keyvalue', pairs: [{ key: 'status', value: 'active' }] },
+        { type: 'steps', steps: [{ title: 'Review' }] },
+        { type: 'diff', diffs: [{ path: 'a.ts', newText: 'updated' }] },
+        { type: 'scene3d', meshes: [{ shape: 'box' }] },
+        { type: 'tabs', tabs: [{ label: 'Details', items: [{ type: 'table', columns: ['Name'], rows: [['README.md']] }] }] },
+      ],
+    })
+    expect(processGenuiSpec(spec).errors).toEqual([])
+    expect(spec).toEqual(original)
+  })
+
+  it('processes the issue #325 table example with its original row data', () => {
+    const spec = {
+      gap: 12,
+      items: [{
+        columns: ['文件', '要点', '状态'],
+        rows: [
+          ['AGENTS.md', '全局基线', '在用'],
+          ['SOUL.md', '人格设定', '备份'],
+        ],
+      }],
+    }
+    const original = structuredClone(spec)
+    const normalized = normalizeGenuiSpec(spec)
+
+    expect(normalized.value).toEqual({
+      gap: 12,
+      items: [{ type: 'table', columns: spec.items[0]!.columns, rows: spec.items[0]!.rows }],
+    })
+    expect(processGenuiSpec(spec).errors).toEqual([])
+    expect(spec).toEqual(original)
+  })
+
+  it('infers uniquely shaped components nested in containers and list entries', () => {
+    const spec = {
+      items: [
+        ...['row', 'col', 'grid', 'card'].map(type => ({ type, items: [{ columns: ['Name'], rows: [['one']] }] })),
+        { type: 'list', items: [{ pairs: [{ key: 'status', value: 'ready' }] }] },
+      ],
+    }
+    const result = processGenuiSpec(spec)
+
+    expect(result.errors).toEqual([])
+    expect(result.normalized.items.slice(0, 4).map(container => container.items[0]?.type))
+      .toEqual(['table', 'table', 'table', 'table'])
+    expect(result.normalized.items[4]?.items[0]?.type).toBe('keyvalue')
+  })
+
+  it('does not infer ambiguous shapes or objects with an explicit invalid type', () => {
+    const nodes = [
+      { columns: ['Name'], rows: [['one']], tabs: [] },
+      { type: null, columns: ['Name'], rows: [['one']] },
+      { type: 123, columns: ['Name'], rows: [['one']] },
+    ]
+
+    for (const node of nodes) {
+      const raw = { items: [node] }
+      expect(normalizeGenuiSpec(raw).value).toEqual(raw)
+      expect(processGenuiSpec(raw).errors).toContain("items[0]: missing string 'type'")
+    }
+  })
+
   it('exposes runtime required, optional, rule, and validator metadata', () => {
     expect(COMPONENT_SCHEMAS.card.fields.title).toBe('string')
     expect(COMPONENT_SCHEMAS.card.optional.title).toBe('string')
@@ -271,7 +352,7 @@ describe('GenUI runtime schema normalization', () => {
       .toContain("items[0]: type 'table' requires columns (array)")
   })
 
-  it('warns for native unknown fields but keeps custom nodes opaque', () => {
+  it('warns for native unknown fields and rejects unsupported types without interpreting their payload', () => {
     const native = diagnoseUnknownGenuiFields({ items: [
       { type: 'callout', content: 'x', typo: true },
       { type: 'custom-widget', typo: true, nested: { type: 'callout', kind: 'error' } },
@@ -282,10 +363,10 @@ describe('GenUI runtime schema normalization', () => {
       { type: 'callout', content: 'x', typo: true },
       { type: 'custom-widget', typo: true },
     ] })
-    expect(result.errors).toEqual([])
+    expect(result.errors.join(' ')).toContain("unknown type 'custom-widget'")
     expect(result.warnings.some(warning => warning.path === 'items[0].typo')).toBe(true)
     expect(result.warnings.some(warning => warning.path.includes('items[1]'))).toBe(false)
-    expect(result.repaired?.items[1]).toEqual({ type: 'custom-widget', typo: true })
+    expect(result.repaired?.items).toEqual([{ type: 'callout', content: 'x' }])
   })
 
   it('warns about unknown fields inside renderer-reachable table details', () => {
@@ -315,7 +396,8 @@ describe('GenUI runtime schema normalization', () => {
       }, {
         type: 'diagram',
         kind: 'flowchart',
-        nodes: [{ id: 'a', label: 'A', lable: 'typo' }],
+        id: 'selectedNode',
+        nodes: [{ id: 'a', label: 'A', description: 'Node detail', lable: 'typo' }],
         edges: [{ from: 'a', to: 'a', fro: 'typo' }],
         zones: [{ label: 'z', labell: 'typo' }],
         theme: { accent: '#fff', acccent: '#000' },
@@ -334,6 +416,8 @@ describe('GenUI runtime schema normalization', () => {
       'items[3].zones[0].labell',
       'items[3].theme.acccent',
     ]))
+    expect(warnings.some(warning => warning.path === 'items[3].id')).toBe(false)
+    expect(warnings.some(warning => warning.path === 'items[3].nodes[0].description')).toBe(false)
     expect(warnings.some(warning => warning.path.includes('custom-widget'))).toBe(false)
   })
 
@@ -344,7 +428,8 @@ describe('GenUI runtime schema normalization', () => {
     ] })
     expect(custom.declaredNativeCount).toBe(1)
     expect(custom.renderedNativeCount).toBe(0)
-    expect(custom.renderedTotalCount).toBe(1)
+    expect(custom.renderedTotalCount).toBe(0)
+    expect(custom.errors.join(' ')).toContain("unknown type 'custom-widget'")
     expect(custom.errors.some(error => error.includes('declared 1, rendered 0'))).toBe(true)
 
     const tree = processGenuiSpec({ items: [

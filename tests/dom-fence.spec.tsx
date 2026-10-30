@@ -145,6 +145,89 @@ afterEach(() => {
 })
 
 describe('installDomFenceRenderer', () => {
+  it('discovers stock fences added to a sidebar conversation after install', async () => {
+    const sidebar = document.createElement('div')
+    sidebar.setAttribute('data-sidebar-chat', '')
+    document.body.append(sidebar)
+    const dispose = installDomFenceRenderer(makeModernCtx('sidebar-session'), () => {})
+    try {
+      const row = assistantRow('sidebar-response')
+      row.append(stockCodeBlock(VALID_SPEC, 'dsh-ui'))
+      sidebar.append(row)
+      expect(await waitFor(() => sidebar.querySelector('.genui-dom-fence')?.textContent?.includes('你好，世界') === true)).toBe(true)
+    } finally { dispose() }
+  })
+
+  it.each(['characterData', 'childList'] as const)('does not revisit mounted fences for composer-only %s changes, but handles mixed batches', async (mutation) => {
+    const row = assistantRow('composer-isolation')
+    const block = stockCodeBlock(VALID_SPEC, 'dsh-ui')
+    row.append(block)
+    const composer = document.createElement('div')
+    composer.setAttribute('data-composer-seat', '')
+    const input = document.createElement('div')
+    input.setAttribute('data-composer-input', '')
+    const draft = document.createTextNode('草稿')
+    input.append(draft)
+    composer.append(input)
+    document.body.append(row, composer)
+    const dispose = installDomFenceRenderer(makeModernCtx('composer-session'), () => {})
+    try {
+      expect(await waitFor(() => row.querySelector('.genui-dom-fence')?.textContent?.includes('你好，世界') === true)).toBe(true)
+      await tick(80)
+      const frames = vi.spyOn(window, 'requestAnimationFrame')
+      const fenceReads = vi.spyOn(block, 'querySelectorAll')
+      if (mutation === 'characterData') draft.data += '继续输入'
+      else input.append(document.createTextNode('继续输入'))
+      await tick(80)
+      expect(frames).not.toHaveBeenCalled()
+      expect(fenceReads).not.toHaveBeenCalled()
+      // A simultaneous real fence update must still pass the gate.
+      draft.data += '混合批次'
+      block.querySelector('code')!.firstChild!.textContent = VALID_SPEC.replace('你好，世界', '正文已经更新')
+      expect(await waitFor(() => row.querySelector('.genui-dom-fence')?.textContent?.includes('正文已经更新') === true)).toBe(true)
+    } finally { dispose() }
+  })
+
+  it.each([
+    ['uppercase banner with canonical source', 'DSH-UI', 'dsh-ui', false, false],
+    ['noisy banner without source while streaming', 'dsh-ui>', undefined, false, true],
+    ['noisy unknown surface with source', 'dsh-ui>', 'dsh-ui>', true, false],
+  ] as const)('normalizes %s before discovery and first takeover', async (_name, label, sourceLabel, unknownSurface, streaming) => {
+    const row = assistantRow('normalized-label', streaming)
+    const block = stockCodeBlock(VALID_SPEC, label)
+    if (unknownSurface) block.className = 'unlisted-host-code-surface'
+    row.appendChild(block)
+    document.body.appendChild(row)
+    const ctx = sourceLabel === undefined ? makeModernCtx('normalized-session') : makeSourceCtx('normalized-session', () => ({
+      nodes: new Map([['normalized-label', {
+        kind: 'assistant-step',
+        data: { blocks: [{ kind: 'text', text: `\`\`\`${sourceLabel}\n${VALID_SPEC}\n\`\`\`` }] },
+      }]]),
+    }), () => () => {})
+    const dispose = installDomFenceRenderer(ctx, () => {})
+    try {
+      expect(await waitFor(() => block.hasAttribute('data-genui-rendered'))).toBe(true)
+      expect(await waitFor(() => row.querySelector('.genui-dom-fence')?.textContent?.includes('你好，世界') === true)).toBe(true)
+      row.removeAttribute('data-streaming')
+      block.querySelector('div > div')!.textContent = 'DSH-UI>'
+      await tick()
+      expect(block.hasAttribute('data-genui-rendered')).toBe(true)
+    } finally { dispose() }
+  })
+
+  it.each(['dsh-ui-special', 'dsh-ui-dark', 'json', 'typescript'])('does not take over an explicit %s banner without source', async label => {
+    const row = assistantRow('other-language')
+    const block = genericCodeBlock(VALID_SPEC, label)
+    row.appendChild(block)
+    document.body.appendChild(row)
+    const dispose = installDomFenceRenderer(makeModernCtx('other-language-session'), () => {})
+    try {
+      await tick()
+      expect(block.hasAttribute('data-genui-rendered')).toBe(false)
+      expect(row.querySelector('.genui-dom-fence')).toBeNull()
+    } finally { dispose() }
+  })
+
   it('renders a Desktop tag-text fence and restores the original text on disposal', async () => {
     const row = assistantRow('desktop-tag')
     const prose = document.createElement('span')
