@@ -36,8 +36,8 @@ description: "Render structured interactive UI inline through the dsh-ui fence. 
 布局：`text` `row` `col` `grid` `card` `carousel` `divider` `spacer` `arrow` `hero`
 展示：`stat` `badge` `progress` `list` `table` `keyvalue` `avatar` `image` `image-group` `compare` `audio` `video` `timeline` `file-tree` `breadcrumb` `diff` `json` `code` `callout` `steps` `icon` `blocks`
 图表：`chart`（bars/line/donut，可多序列）`plot`（数学函数图）`echart`（ECharts 全功能图表）
-交互：`button` `input` `select` `checkbox` `radio` `switch` `slider` `textarea` `tabs` `accordion` `copy` `link` `submit`
-高级：`svg` `mermaid` `diagram` `scene3d` `quiz`
+交互：`button` `input` `select` `checkbox` `radio` `switch` `slider` `textarea` `editor` `date-picker` `segmented-control` `popover` `tabs` `accordion` `copy` `link` `submit`
+高级：`svg` `mermaid` `diagram` `scene3d` `quiz` `entity-card`
 
 ### 布局
 - text: `{"type":"text","size":"display|h1|h2|h3|body|muted|caption","content":"...","align":"left|center|right"?}`（`tone:"danger|success|warning|info|muted"` 给整行文字上语义色，不用套 badge；`mono:true` 走等宽字体，用于十六进制/二进制/标识符，不带行内代码底色）（`size:"display"` 比标题大一档，作引言/开篇点题句，**一条回答 ≤1**；`center:true` 是旧写法，等价 `align:"center"`，新写一律用 `align`）
@@ -109,9 +109,14 @@ Check CheckCircle Info InfoCircle Warning Error X Plus Minus Circle ArrowDown Ar
   - **两条硬规则**：① 隐藏节点不渲染，读者看不到就绝不会提交它的旧值（`submit` 的 `fields`/`answers` 会剔除隐藏键）；② 隐藏字段不算「未填」，不会把提交按钮卡成不可用。
   - 缺省行为：没有 block 状态时（导出 HTML、面板无 provider）条件无法求值，节点**保持可见**——宁可多显示，也不静默删掉导出文档的一整个分支。
   - `in`/`not-in` 的 `value` 必须是数组；`gt`/`gte`/`lt`/`lte` 两边都按数字比较，非法数字视为不满足。
-- submit: `{"type":"submit","label":"<user-language action>","action":"grade","groups":["q1","styles"],"resetAction":"redo"?}` — 聚合按钮：`groups` 引用当前 block 中的 submission member key，来源为 `radio.group`、`checkbox.group`、`input.id`、`textarea.id`、`select.id`、`slider.id`；radio 需已选择，checkbox 组需至少选择一项，普通 field 的值需在 trim 后非空。`groups` 控制提交所需成员与完成进度；未设置时，至少有一个已完成成员即可提交。纯 radio 范围含 `answer` 且本次没有范围外 payload 时可本地判卷；其余场景一次发送 `[genui-action]`，payload 继续收集当前 block 中已填写的表单状态，字段名称保持 `answers`、`fields`、`total`、`answered`
+- submit: `{"type":"submit","label":"<user-language action>","action":"grade","groups":["q1","styles"],"resetAction":"redo"?}` — 聚合按钮：`groups` 引用当前 block 中的 submission member key，来源为 `radio.group`、`checkbox.group`、`input.id`、`textarea.id`、`editor.id`、`date-picker.id`、`segmented-control.id`、`diagram.id`、`select.id`、`slider.id`；radio 需已选择，checkbox 组需至少选择一项，普通 field 的值需在 trim 后非空。`groups` 控制提交所需成员与完成进度；未设置时，至少有一个已完成成员即可提交。纯 radio 范围含 `answer` 且本次没有范围外 payload 时可本地判卷；其余场景一次发送 `[genui-action]`，payload 继续收集当前 block 中已填写的表单状态，字段名称保持 `answers`、`fields`、`total`、`answered`
 - switch: `{"type":"switch","label":"...","checked":true?,"action":"toggle"?}`
 - textarea: `{"type":"textarea","label":"...","placeholder":"...","rows":n?,"value":"...","action":"save"?,"id":"field-id"?}` — action 在失焦和 **Ctrl/Cmd+Enter** 时触发；blur 仅值有变化才发送；带 `id` 的值刷新后保留
+- editor: `{"type":"editor","id":"draft","label":"正文","value":"初始文本","placeholder":"继续编辑","rows":8}` — 纯文本编辑；编辑内容实时同步到当前区块；启用状态持久化且存储成功时，刷新可以恢复；可复制当前文字；带 `id` 的值也可由 sibling `submit` 统一提交
+- entity-card: `{"type":"entity-card","name":"Ada Lovelace","image":"https://example.com/ada.png","description":"数学家","metadata":[{"label":"领域","value":"计算机科学"}],"href":"https://example.com/source","sourceLabel":"来源","actions":[{"label":"查看详情","action":"open-ada"}]}` — 展示实体图片、名称、描述、元数据、来源链接和操作按钮；操作按钮通过 `action` 发送给宿主
+- popover: `{"type":"popover","label":"说明","content":"补充信息","trigger":"click","placement":"top"}` — 补充说明可设为 `click` 或 `hover` 触发；支持键盘焦点、Escape 和外部点击关闭，位置会在视口边缘自动调整
+- date-picker: `{"type":"date-picker","label":"...","mode":"single|range","value":"YYYY-MM-DD 或 YYYY-MM-DD/YYYY-MM-DD","min":"YYYY-MM-DD","max":"YYYY-MM-DD","id":"field-id"}` — 使用浏览器原生日期控件；日期必须是真实日历日期，范围模式的值是开始和结束日期组成的 ISO 区间；范围输入完整且有效后，带 `id` 的值进入共享状态与 submit 的 `fields`
+- segmented-control: `{"type":"segmented-control","label":"...","options":["...","..."],"value":"...","id":"field-id","action":"pick"}` — 胶囊式单选控件；带 `id` 时选中值进入共享状态，可用于 `when` 更新同级组件，也会进入 submit 的 `fields`；`action` 可选，设置后每次选择都会发送该 action
 - tabs: `{"type":"tabs","tabs":[{"label":"...","items":[...]}]}` — 空 tab 可以省略 `items`，会按空数组处理
 - accordion: `{"type":"accordion","items":[{"title":"...","items":[...]}]}`
 - copy: `{"type":"copy","label":"<user-language action>","text":"<user-language text>","expandable":true?,"previewLines":n?}` · [docs/copy-preview.md](docs/copy-preview.md)

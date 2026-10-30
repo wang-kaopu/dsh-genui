@@ -8,7 +8,7 @@
  * v1 interactivity is client-side only: buttons, tabs, checkboxes, and inputs
  * are operable, but events do NOT flow back to the model.
  */
-import { COMPONENT_SCHEMAS, GENUI_NATIVE_TYPES, WHEN_OPS } from './genui-runtime/schema.ts'
+import { COMPONENT_SCHEMAS, GENUI_NATIVE_TYPES, POPOVER_PLACEMENTS, WHEN_OPS } from './genui-runtime/schema.ts'
 
 /** One node in the component tree. */
 /** Layout hints accepted by every node: `span` is how many columns the node
@@ -58,6 +58,8 @@ export type GenuiNode = (
   | GenuiButton
   | GenuiInput
   | GenuiSelect
+  | GenuiDatePicker
+  | GenuiSegmentedControl
   | GenuiCheckbox
   | GenuiLink
   | GenuiImage
@@ -104,6 +106,9 @@ export type GenuiNode = (
   | GenuiIcon
   | GenuiBlocks
   | GenuiArrow
+  | GenuiEditor
+  | GenuiEntityCard
+  | GenuiPopover
 ) & GenuiLayoutHints
 
   | (GenuiEChart & GenuiLayoutHints)
@@ -201,6 +206,49 @@ export interface GenuiText {
   align?: 'left' | 'center' | 'right'
 }
 
+/** Editable plain-text content whose draft is stored with the containing block. */
+export interface GenuiEditor {
+  type: 'editor'
+  id: string
+  value: string
+  label?: string
+  placeholder?: string
+  rows?: number
+}
+
+export interface GenuiEntityMetadata {
+  label: string
+  value: string
+}
+
+export interface GenuiEntityAction {
+  label: string
+  action: string
+  tone?: 'primary' | 'danger' | 'success' | 'ghost'
+}
+
+/** A compact summary for a person, product, place, or organization. */
+export interface GenuiEntityCard {
+  type: 'entity-card'
+  name: string
+  image?: string
+  imageAlt?: string
+  description?: string
+  metadata?: GenuiEntityMetadata[]
+  href?: string
+  sourceLabel?: string
+  actions?: GenuiEntityAction[]
+}
+
+/** A keyboard-operable floating explanation attached to a labelled trigger. */
+export interface GenuiPopover {
+  type: 'popover'
+  label: string
+  content: string
+  trigger?: 'click' | 'hover'
+  placement?: typeof POPOVER_PLACEMENTS[number]
+}
+
 export interface GenuiButton {
   type: 'button'
   label: string
@@ -244,6 +292,29 @@ export interface GenuiSelect {
    * input/textarea ids.
    */
   id?: string
+}
+
+/** 使用 ISO 日期或 ISO 日期区间的原生日期控件。 */
+export interface GenuiDatePicker {
+  type: 'date-picker'
+  label?: string
+  mode?: 'single' | 'range'
+  /** 单日期使用 ISO 日期；范围模式使用 `start/end` 两个 ISO 日期。 */
+  value?: string
+  min?: string
+  max?: string
+  /** 供共享状态和 submit 使用的字段标识。 */
+  id?: string
+}
+
+/** 可通过共享选中值更新同级组件的单选控件。 */
+export interface GenuiSegmentedControl {
+  type: 'segmented-control'
+  label?: string
+  options: string[]
+  value?: string
+  id?: string
+  action?: string
 }
 
 /** 保存计算后复选框显示文案对应的运行时身份。 */
